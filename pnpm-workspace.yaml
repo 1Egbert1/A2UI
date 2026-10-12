@@ -1,0 +1,12 @@
+packages:
+  - 'packages/*'
+  - 'web/*'
+  - 'server/*'
+
+# Windows 下使用扁平 node_modules，避免 pnpm 默认 isolated 布局
+# 导致 esbuild / vite 等传递依赖无法正确解析
+nodeLinker: hoisted
+
+# 允许 esbuild 执行安装脚本（下载平台二进制）
+allowBuilds:
+  esbuild: true

@@ -1,0 +1,2 @@
+{"surfaceUpdate":{"surfaceId":"simple-text","components":[{"id":"root","component":{"Text":{"text":{"literalString":"Hello, A2UI!"},"usageHint":"h2"}}}]}}
+{"beginRendering":{"surfaceId":"simple-text","root":"root"}}

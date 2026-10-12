@@ -1,0 +1,31 @@
+{
+  "name": "a2ui-vue",
+  "version": "0.0.1",
+  "description": "Vue 3 rendering engine for A2UI component library",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "pnpm --filter a2ui-core run build && mocha 'test/**/*.spec.ts'",
+    "test:types": "tsc -p tsconfig.test.json"
+  },
+  "peerDependencies": {
+    "vue": "^3.5.0"
+  },
+  "dependencies": {
+    "a2ui-core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.20.5",
+    "mocha": "^10.8.2",
+    "tsx": "^4.23.15",
+    "typescript": "^5.6.3",
+    "vue": "^3.5.0"
+  }
+}

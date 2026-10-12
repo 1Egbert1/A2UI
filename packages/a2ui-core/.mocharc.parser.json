@@ -1,0 +1,6 @@
+{
+  "require": ["tsx"],
+  "extension": ["ts"],
+  "spec": "test/parser.spec.ts",
+  "recursive": true
+}

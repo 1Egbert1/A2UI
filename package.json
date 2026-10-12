@@ -1,0 +1,20 @@
+{
+  "name": "a2ui",
+  "version": "0.0.1",
+  "private": true,
+  "description": "A2UI - Generate UI interfaces through AI-driven conversations",
+  "packageManager": "pnpm@12.10.1",
+  "scripts": {
+    "build": "pnpm -r build",
+    "dev": "pnpm -r --parallel dev",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint",
+    "clean": "pnpm -r exec -- node -e \"['dist','node_modules/.cache'].forEach(p=>require('fs').rmSync(p,{recursive:true,force:true}))\""
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}
