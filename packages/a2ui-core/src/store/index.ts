@@ -1,4 +1,5 @@
 import { createStore } from 'zustand/vanilla';
+import { writePath } from '../binding';
 import { setRenderMap, type RenderMap } from '../renderer';
 import { renderTree, setTreeRenderer, type TreeRenderer } from '../tree-render';
 import type { ComponentTree, TreeMap } from '../treebuilder/types';
@@ -210,6 +211,44 @@ export const updateDataModel = (surfaceId: string, patch: Record<string, unknown
       [surfaceId]: { ...(state.dataModelMap[surfaceId] ?? {}), ...patch },
     },
   }));
+};
+
+/**
+ * 客户端写回数据模型后的「重渲染」入口。
+ *
+ * `updateDataModelPath` 被渲染引擎（经由 `RenderContext.updateModel`）调用时，除了写数据
+ * 模型，还要触发一次派生状态刷新（水合 + 建树 + 调树渲染器），让绑定了同一 path 的组件
+ * 同步更新。但「刷新」的实现 `requestDerivedStateRefresh` 在 parser 层，store 不能反向
+ * 依赖 parser（会成环），所以这里用一个可注入回调打破依赖环：由 parser 在加载时注册。
+ *
+ * 注：注入的是**合帧**入口而不是同步原语 —— 拖动滑块这类交互一帧内会写很多次，而派生状态
+ * 是全量重算，没必要每次都跑。实际执行时机由 `../scheduler` 决定。
+ *
+ * 与 `setTreeRenderer` 的间接层是同一个思路——store 只维护状态与转换落点，不关心谁消费。
+ */
+let modelChangeNotifier: (() => void) | undefined;
+
+export const setModelChangeNotifier = (notifier: (() => void) | undefined): void => {
+  modelChangeNotifier = notifier;
+};
+
+/**
+ * 客户端按 path 写回数据模型的**单个值**（表单控件交互的落点）。
+ *
+ * 与 `updateDataModel`（按对象整体 patch 合并）不同，这里按 path 精确写入一个值
+ * （如把 `/email` 写成用户刚输入的内容），写完后**请求**一次派生状态刷新。
+ * 注意写入是同步的（`setState` 返回后 store 已是新数据），但**刷新是合帧的** ——
+ * 浏览器里下一帧才重渲染，因此不要写完立刻断言视图，要断言 store。
+ */
+export const updateDataModelPath = (surfaceId: string, path: string, value: unknown): void => {
+  getA2UIStore().setState((state) => ({
+    dataModelMap: {
+      ...state.dataModelMap,
+      [surfaceId]: writePath(state.dataModelMap[surfaceId] ?? {}, path, value),
+    },
+  }));
+
+  modelChangeNotifier?.();
 };
 
 export const removeDataModel = (surfaceId: string) => {

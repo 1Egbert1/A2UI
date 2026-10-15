@@ -7,14 +7,16 @@
  *
  * 1. **缓冲拼接**：片段尾部不足一行的部分留在 buffer，等下一片补齐再处理；
  * 2. **逐行摄取**：凑齐一行就 trim → 空行跳过 → 交给 `ingestLine`（与 `parseA2UI` 同一条路径）；
- * 3. **每片刷新**：只要这一片真的解析出了消息，就 `refreshDerivedState()`（hydrate + buildTree），
- *    使 store 在任何时刻都自洽、可渲染——这正是流式 UI 想要的「边到边渲染」。
+ * 3. **每片请求刷新**：只要这一片真的解析出了消息，就 `requestDerivedStateRefresh()`（水合 +
+ *    建树 + 回调树渲染器），使 store 尽快自洽、可渲染——这正是流式 UI 想要的「边到边渲染」。
  *
- * 注意：派生状态是**全量重算**（`hydrate` 会重渲染 store 中所有节点），逐片刷新在消息数很大时
- * 是 O(n²)。当前量级（几十条）无所谓；真要撑大流量，应改成按帧/按需刷新。
+ * 关于「刷新」的时机：派生状态是**全量重算**，逐片同步重算在消息数很大时是 O(n²)。所以这里
+ * 走的是**合帧**入口（`requestDerivedStateRefresh`）：同一帧内多次 push 只真正重算一次，
+ * 具体的合并策略由 `../scheduler` 决定（浏览器合并到下一帧，Node / SSR 无 rAF 时同步执行）。
+ * 单测环境没有 `requestAnimationFrame`，因此推完即可断言，行为与逐片同步一致。
  */
 
-import { ingestLine, refreshDerivedState } from './ingest';
+import { ingestLine, requestDerivedStateRefresh } from './ingest';
 
 export interface JSONLStream {
   /**
@@ -69,7 +71,7 @@ export const createJSONLStream = (): JSONLStream => {
     }
 
     if (handled > 0) {
-      refreshDerivedState();
+      requestDerivedStateRefresh();
     }
 
     return handled;
@@ -86,7 +88,7 @@ export const createJSONLStream = (): JSONLStream => {
     }
 
     consumeSegment(rest);
-    refreshDerivedState();
+    requestDerivedStateRefresh();
     return 1;
   };
 

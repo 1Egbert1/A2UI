@@ -11,8 +11,9 @@
  * 调度逻辑一行都不用重写。
  *
  * 触发点只有两处，都代表「组件树刚刚发生了变化」：
- * 1. `refreshDerivedState()` —— 每次 `buildTree` 之后（一次性解析在整段末尾，
- *    流式解析在每次 `push` 末尾）；
+ * 1. `refreshDerivedState()` —— 每次 `buildTree` 之后。一次性解析（`parseA2UI`）在整段末尾
+ *    同步调它；流式推送走 `requestDerivedStateRefresh()` 合帧请求，所以是「下一帧」而不是
+ *    「每次 push 末尾」（见 `../scheduler`）；
  * 2. `clearStore()` —— 树被清空，通知渲染器把页面上的旧树撤掉。
  */
 

@@ -13,6 +13,9 @@ packages - a2ui sdk npm 包
       ├── createA2UIBuffer：JSON 框定的缓冲流（括号配对取完整值；**不等整条 surfaceUpdate
       │     收完** —— 每有一个组件闭合就补全成「一个组件一条完整消息」，做到边到边渲染），
       │     配套 chunkText / simulateTextStream 模拟「每 50ms 吐 50 字符」的字符流
+    ├── binding：数据绑定（取值对象 `{ literal* | path }` 的读、按 path 写回数据模型）
+    ├── mock：自带示例协议（TS 模块，一行一条 JSONL 消息）。`data-binding` 是最小完整的数据
+    │     绑定示例（TextField/CheckBox/Slider 写回 + Text 同 path 联动），配套两侧端到端测试
     ├── vnode：用来映射管理a2ui协议生成的组件
     ├── treebuilder:用来构建a2ui协议生成的组件树的模块
   ├── a2ui-vue:基于Vue3的a2ui渲染引擎，用于在Vue3中使用A2UI组件库

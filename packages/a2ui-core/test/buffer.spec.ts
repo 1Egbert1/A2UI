@@ -5,6 +5,8 @@ import {
   columnRowMixCompactStreamMessages,
   columnRowMixMessages,
 } from '../mock/column-row-mix';
+import { listTemplateMessages } from '../mock/list-template';
+import { shoppingCartMessages } from '../mock/shopping-cart';
 import {
   chunkText,
   createA2UIBuffer,
@@ -205,6 +207,54 @@ describe('normalizeToJSONL', () => {
   it('should hand invalid JSON back unchanged so the parser can report it', () => {
     assert.deepEqual(normalizeToJSONL('{oops'), ['{oops']);
   });
+
+  it('should split a nested dataModelUpdate into one message per leaf entry', () => {
+    const lines = normalizeToJSONL(listTemplateMessages[1] as string);
+
+    assert.equal(lines.length, 6, '3 个 item ×（name、desc）= 6 个叶子条目');
+
+    const decoded = lines.map((line) => {
+      const { dataModelUpdate } = JSON.parse(line) as {
+        dataModelUpdate: { surfaceId: string; path: string; contents: Array<{ key: string }> };
+      };
+      assert.equal(dataModelUpdate.surfaceId, 'list-template', '每条都带上原 surfaceId');
+      assert.equal(dataModelUpdate.contents.length, 1, '每条恰好一个数据条目');
+      return `${dataModelUpdate.path}#${dataModelUpdate.contents[0]?.key}`;
+    });
+
+    assert.deepEqual(decoded, [
+      '/items/p1#name',
+      '/items/p1#desc',
+      '/items/p2#name',
+      '/items/p2#desc',
+      '/items/p3#name',
+      '/items/p3#desc',
+    ]);
+  });
+
+  it('should extend the path through every nested valueMap level', () => {
+    const paths = normalizeToJSONL(shoppingCartMessages[1] as string).map((line) => {
+      const { dataModelUpdate } = JSON.parse(line) as { dataModelUpdate: { path: string } };
+      return dataModelUpdate.path;
+    });
+
+    assert.ok(paths.includes('/cart/items/c1'), '三层嵌套：cart → items → c1');
+    assert.ok(paths.includes('/cart/items/c3'), '最后一个 item 也要拆到');
+    assert.ok(paths.includes('/cart'), 'items 的同级键 total 落在 /cart');
+    assert.equal(paths.filter((path) => path === '/cart/items/c1').length, 5, 'c1 的 5 个字段各一条');
+  });
+
+  it('should keep a single-leaf dataModelUpdate as a single line', () => {
+    const value = JSON.stringify({
+      dataModelUpdate: {
+        surfaceId: 's',
+        path: 'prefs',
+        contents: [{ key: 'volume', valueNumber: 70 }],
+      },
+    });
+
+    assert.deepEqual(normalizeToJSONL(value), [value], '只有一条数据时不该多套一层 path');
+  });
 });
 
 describe('createA2UIBuffer', () => {
@@ -218,7 +268,8 @@ describe('createA2UIBuffer', () => {
       const buffer = createA2UIBuffer();
       const sent = buffer.push(MIX_JSONL);
 
-      assert.equal(sent, MIX_LINES.length, '一次喂入应补全出 28 条消息');
+      // 28 个 JSON 值里，dataModelUpdate 装着 3 条数据 → 补全后多出 2 条，共 30 条消息。
+      assert.equal(sent, MIX_LINES.length + 2, '一次喂入应补全出 30 条消息');
       assert.equal(buffer.valueCount, MIX_LINES.length, '28 个 JSON 值');
       assert.equal(buffer.pending, '');
 
@@ -349,7 +400,7 @@ describe('createA2UIBuffer', () => {
       buffer.push(`${columnRowMixCompactMessages.join('\n')}\n`);
 
       assert.equal(buffer.valueCount, 3, '1 条 surfaceUpdate + beginRendering + dataModelUpdate');
-      assert.equal(buffer.messageCount, 28, '26 个组件补全成 26 条 + 其余 2 条');
+      assert.equal(buffer.messageCount, 30, '26 个组件 + 3 条数据 + 1 条 beginRendering');
       assert.equal(buffer.emitted.filter((line) => firstKey(line) === 'surfaceUpdate').length, 26);
 
       const compacted = summarize();
@@ -383,7 +434,7 @@ describe('createA2UIBuffer', () => {
       buffer.push(`${columnRowMixCompactMessages.join('\n')}\n`);
 
       assert.equal(buffer.valueCount, 3);
-      assert.equal(buffer.messageCount, 28);
+      assert.equal(buffer.messageCount, 30);
       assert.notEqual(buffer.valueCount, buffer.messageCount, '拆分后两者不应相等');
     });
 
@@ -518,6 +569,123 @@ describe('extractPartialItems', () => {
     const head = value.slice(0, value.indexOf('{"id":"y"'));
 
     assert.deepEqual(extractPartialItems(head).messages.map(componentIdOf), ['x']);
+  });
+});
+
+describe('extractPartialItems · dataModelUpdate', () => {
+  const VALUE = listTemplateMessages[1] as string;
+  /** 切到第 3 个 item 之前：p1 / p2 的 4 个叶子已闭合，p3 还一个字符都没到。 */
+  const HEAD = VALUE.slice(0, VALUE.indexOf('{"key":"p3"'));
+
+  /** 取一条补全消息里的「路径#key」——此刻它必然只含一个数据条目。 */
+  const addressOf = (line: string): string => {
+    const { dataModelUpdate } = JSON.parse(line) as {
+      dataModelUpdate: { path: string; contents: Array<{ key: string }> };
+    };
+    return `${dataModelUpdate.path}#${dataModelUpdate.contents[0]?.key}`;
+  };
+
+  it('should pull out the leaves that closed before the value does', () => {
+    const { total, messages } = extractPartialItems(HEAD);
+
+    assert.equal(total, 4, 'p1、p2 各 2 个字段已闭合');
+    assert.deepEqual(messages.map(addressOf), [
+      '/items/p1#name',
+      '/items/p1#desc',
+      '/items/p2#name',
+      '/items/p2#desc',
+    ]);
+  });
+
+  it('should complete each pulled leaf into a full parseable dataModelUpdate', () => {
+    for (const line of extractPartialItems(HEAD).messages) {
+      const { dataModelUpdate } = JSON.parse(line) as {
+        dataModelUpdate: { surfaceId: string; path: string; contents: unknown[] };
+      };
+      assert.equal(dataModelUpdate.surfaceId, 'list-template', '补齐的信封必须带上 surfaceId');
+      assert.equal(dataModelUpdate.contents.length, 1, '每条恰好一个数据条目');
+    }
+  });
+
+  it('should produce byte-for-byte the same lines as the whole-value path', () => {
+    assert.deepEqual(
+      extractPartialItems(HEAD).messages,
+      normalizeToJSONL(VALUE).slice(0, 4),
+      '增量拆出的前 4 条必须与整值拆分的前 4 条逐字节相同',
+    );
+  });
+
+  it('should only return leaves past the skip cursor', () => {
+    const { total, messages } = extractPartialItems(HEAD, 3);
+
+    assert.equal(total, 4, 'total 是「扫到的总数」，与 skip 无关');
+    assert.deepEqual(messages.map(addressOf), ['/items/p2#desc']);
+  });
+
+  it('should wait while surfaceId is still streaming', () => {
+    assert.deepEqual(extractPartialItems('{"dataModelUpdate":{"surfac'), {
+      total: 0,
+      messages: [],
+    });
+  });
+
+  it('should refuse a dataModelUpdate whose contents come before surfaceId', () => {
+    assert.deepEqual(
+      extractPartialItems('{"dataModelUpdate":{"contents":[{"key":"a","valueString":"x"}]'),
+      { total: 0, messages: [] },
+      '补出来会缺 surfaceId，交给整值粒度',
+    );
+  });
+});
+
+describe('createA2UIBuffer · dataModelUpdate 逐条拆出', () => {
+  beforeEach(() => {
+    resetA2UIStore();
+    setRenderMap(MARKER_RENDER_MAP);
+  });
+
+  /** 读一个集合键在数据模型里的条目数（不存在记 0）。 */
+  const collectionSize = (surfaceId: string, ...keys: string[]): number => {
+    let cursor: unknown = getDataModel(surfaceId);
+    for (const key of keys) {
+      cursor = (cursor as Record<string, unknown> | undefined)?.[key];
+    }
+    return cursor && typeof cursor === 'object' ? Object.keys(cursor).length : 0;
+  };
+
+  it('should grow a nested collection one item at a time', () => {
+    const value = listTemplateMessages[1] as string;
+    const buffer = createA2UIBuffer();
+    const sizes: number[] = [];
+
+    for (const chunk of chunkText(`${value}\n`, 40)) {
+      buffer.push(chunk);
+      sizes.push(collectionSize('list-template', 'items'));
+    }
+
+    assert.ok(sizes.includes(1), 'p1 到手后 /items 里应已有 1 个条目');
+    assert.ok(sizes.includes(2), 'p2 到手后应有 2 个条目');
+    assert.equal(sizes[sizes.length - 1], 3, '全部到齐后是 3 个条目');
+    assert.equal(buffer.messageCount, 6, '6 个叶子拆成 6 条消息');
+  });
+
+  it('should converge a deeply nested dataModelUpdate to the same model as a one-shot parse', () => {
+    const text = `${shoppingCartMessages.join('\n')}\n`;
+
+    const buffer = createA2UIBuffer();
+    for (const chunk of chunkText(text, 50)) {
+      buffer.push(chunk);
+    }
+    const streamed = getDataModel('shopping-cart');
+
+    resetA2UIStore();
+    parseA2UI(text);
+    const oneShot = getDataModel('shopping-cart');
+
+    assert.deepEqual(streamed, oneShot, '三种深度的嵌套都要收敛到同一份数据模型');
+    assert.equal(collectionSize('shopping-cart', 'cart', 'items'), 3);
+    const cart = streamed?.cart as { total?: unknown } | undefined;
+    assert.equal(cart?.total, '¥627.00');
   });
 });
 

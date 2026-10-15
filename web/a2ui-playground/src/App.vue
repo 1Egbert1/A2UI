@@ -43,6 +43,17 @@
         暂无可渲染的组件树：需要 beginRendering 让 surface 诞生，且组件类型已注册渲染器。
       </p>
 
+      <div v-if="activeDataModel !== null" class="binding-hint">
+        <strong>{{ bindingHintTitle }}</strong>
+        <ol v-if="activeSurfaceId === 'data-binding'">
+          <li>改「Name」输入框 → 下方标题（也绑定 <code>/user/name</code>）跟着变；</li>
+          <li>勾选 Subscribe、拖动音量 → 值写回数据模型并触发重渲染；</li>
+          <li>下面 JSON 是 <code>dataModelMap['data-binding']</code> 的实时内容，改动即时反映。</li>
+        </ol>
+        <p v-else class="binding-desc">{{ bindingHintDesc }}</p>
+        <pre class="binding-model">{{ activeDataModelJson }}</pre>
+      </div>
+
       <div v-if="treeOutline" class="outline-block">
         <span class="outline-title">组件树 treeMap["{{ activeSurfaceId }}"].root</span>
         <pre class="outline">{{ treeOutline }}</pre>
@@ -53,7 +64,7 @@
       <div class="panel-header">
         <h2>Stream 模拟</h2>
         <span class="tag">
-          column-row-mix · {{ streamMode === 'char' ? '字符流 50 字符 / 50ms' : '逐条推送' }}
+          {{ activeMock.label }} · {{ streamMode === 'char' ? '字符流 50 字符 / 50ms' : '逐条推送' }}
         </span>
       </div>
 
@@ -62,12 +73,17 @@
         （hydrate + buildTree）。默认走 <strong>流式友好</strong> 顺序，预览区会随着消息逐条长大；
         切到 <strong>协议顺序</strong> 可以对比 <strong>beginRendering 的位置</strong> 的影响 ——
         那时前面全推完页面仍然是空的，直到最后一条才一次性出现。
+        <span class="stream-desc__note">
+          本模式不经过 buffer：一条 mock 消息就是一条消息，不会被拆开。
+        </span>
       </p>
       <p v-else class="stream-desc">
         把 <strong>紧凑版</strong> 数据拼成整段 JSONL，按 <strong>每 50ms 吐 50 个字符</strong> 喂给
         <code>createA2UIBuffer()</code>。切片必然落在 JSON 中间，buffer 靠括号配对捞值 —— 关键是
-        <strong>不等整条 surfaceUpdate 收完</strong>：每有一个组件闭合，就立刻把它
+        <strong>不等整条消息收完</strong>：每有一个组件（或数据条目）闭合，就立刻把它
         <strong>补全成一条独立、可解析的消息</strong> 交给 parser，所以组件是一个个长出来的。
+        <code>dataModelUpdate</code> 还会被 <strong>递归拆到叶子条目</strong>（path 带上祖先 key），
+        列表数据因此也是一条条落进数据模型、一张张渲染出来。
         切到 <strong>协议顺序</strong> 可以对比 <strong>beginRendering 的位置</strong>：
         那时它排在最后，组件全到齐了树还是空的。
       </p>
@@ -98,7 +114,7 @@
           popper-class="mock-select-popper"
         >
           <el-option
-            v-for="(order, index) in STREAM_ORDERS"
+            v-for="(order, index) in streamOrders"
             :key="order.label"
             :label="order.label"
             :value="index"
@@ -246,12 +262,13 @@ import {
 } from 'a2ui-core';
 import type { A2UIBuffer, A2UIStoreState, JSONLStream, TreeMap, TreeNode } from 'a2ui-core';
 import {
-  columnRowMixCompactMessages,
-  columnRowMixCompactStreamMessages,
   columnRowMixMessages,
-  columnRowMixStreamMessages,
   columnTextsMessages,
+  dataBindingMessages,
+  deriveStreamOrders,
+  listTemplateMessages,
   productCardMessages,
+  shoppingCartMessages,
   simpleTextMessages,
 } from 'a2ui-core/mock';
 import { renderMap } from 'a2ui-vue';
@@ -295,57 +312,60 @@ const MOCKS = [
     surfaceId: 'column-row-mix',
     messages: columnRowMixMessages,
   },
+  {
+    label: 'data-binding',
+    desc: '数据绑定：输入 / 勾选 / 拖动写回数据模型',
+    surfaceId: 'data-binding',
+    messages: dataBindingMessages,
+  },
+  {
+    label: 'list-template',
+    desc: 'List 动态渲染：按数据列表展开模板组件',
+    surfaceId: 'list-template',
+    messages: listTemplateMessages,
+  },
+  {
+    label: 'shopping-cart',
+    desc: '购物车列表：List 模板 + 图片 + 合计绑定',
+    surfaceId: 'shopping-cart',
+    messages: shoppingCartMessages,
+  },
 ] as const;
 
 const dialogVisible = ref(false);
 const errorDialogVisible = ref(false);
 /** 默认停在 column-row-mix —— 多层 Column / Row 混排最能看出嵌套组装的效果。 */
 const mockIndex = ref(3);
+/** 下拉当前选中的 mock，批量渲染与 Stream 面板共用这一份数据源。 */
+const activeMock = computed(() => MOCKS[mockIndex.value] ?? MOCKS[0]);
 const storeState = ref<A2UIStoreState | null>(null);
 /** 交给 vue 的 render() 作为挂载容器的元素。 */
 const previewRef = ref<HTMLElement | null>(null);
 let unsubscribe: (() => void) | undefined;
-
-/** Stream 面板固定推这份 mock —— 它已被拆成「每条消息只定义一个组件」，最适合逐条喂。 */
-const STREAM_SURFACE_ID = 'column-row-mix';
 
 /** 字符流模式的分片参数：每 50ms 吐 50 个字符，模拟模型按 token 逐字输出。 */
 const CHAR_CHUNK = 50;
 const CHAR_INTERVAL = 50;
 
 /**
- * 流式面板可选的两种消息顺序，消息内容完全一样，只有 `beginRendering` 的位置不同。
+ * 流式面板的数据源**跟随下拉选中的 mock**：对 `activeMock.messages` 实时派生两种消息顺序
+ * （协议顺序 / 流式友好），每种又带一份紧凑版（多条 surfaceUpdate 压成一条）。
+ * 派生逻辑在 `a2ui-core/mock/stream` 的 `deriveStreamOrders` 里，任何 mock 都能直接套用。
  *
- * - 协议顺序：`beginRendering` 在最后。surface 只有在这一条才诞生（`Surface.rootNode` 必须
- *   先知道根是谁），所以前面把所有组件推完，树依然是空的、预览区一片空白；
+ * - 协议顺序：`beginRendering` 在最后。surface 只有在这一条才诞生，前面全推完树依然是空的；
  * - 流式友好：把 `beginRendering` 提到 root 之后。root 一到 surface 就成立，后续子组件每
  *   到达一条就挂上一批，预览区能真的「边到边长大」。
  *
- * 每种顺序都附一份 `compact`（紧凑版）：多条 surfaceUpdate 压成**一条**多组件消息（流式友好版
- * 会保留「root 单独一条 → beginRendering → 其余压成一条」的形状，见 mock 里的推导）。
  * 「字符流」模式走紧凑版 —— 这样 buffer 的「协议补全」（一条拆成 N 条）才看得见。
  */
-const STREAM_ORDERS = [
-  {
-    label: '协议顺序',
-    desc: 'beginRendering 在最后',
-    messages: columnRowMixMessages,
-    compact: columnRowMixCompactMessages,
-  },
-  {
-    label: '流式友好',
-    desc: 'beginRendering 紧随 root',
-    messages: columnRowMixStreamMessages,
-    compact: columnRowMixCompactStreamMessages,
-  },
-] as const;
+const streamOrders = computed(() => deriveStreamOrders(activeMock.value.messages));
 
 /**
- * 默认停在「流式友好」—— 这是**观感**的关键：协议顺序下前 27 条推完预览区一直空白，
+ * 默认停在「流式友好」—— 这是**观感**的关键：协议顺序下组件全推完预览区一直空白，
  * 最后一条瞬间全出，是「跳变」而不是「生长」。想看协议原样顺序可以手动切回去对比。
  */
 const streamOrderIndex = ref(1);
-const streamMessages = computed(() => STREAM_ORDERS[streamOrderIndex.value].messages);
+const streamMessages = computed(() => streamOrders.value[streamOrderIndex.value].messages);
 
 /**
  * 推送模式：
@@ -366,7 +386,7 @@ const streamMode = ref<StreamMode>('jsonl');
 
 /** 字符流模式的输入：紧凑版消息拼成整段 JSONL（结尾补换行）。 */
 const streamText = computed(
-  () => `${STREAM_ORDERS[streamOrderIndex.value].compact.join('\n')}\n`,
+  () => `${streamOrders.value[streamOrderIndex.value].compact.join('\n')}\n`,
 );
 /** 把整段文本按 50 字符切好，手动步进与总片数都用它。 */
 const charChunks = computed(() => chunkText(streamText.value, CHAR_CHUNK));
@@ -406,8 +426,6 @@ interface StreamLogEntry {
   errors: number;
 }
 
-const activeMock = computed(() => MOCKS[mockIndex.value] ?? MOCKS[0]);
-
 /** 当前模式下「推送单元」的总数：逐条模式是消息条数，字符流模式是分片数。 */
 const totalUnits = computed(() =>
   streamMode.value === 'char' ? charChunks.value.length : streamMessages.value.length,
@@ -421,13 +439,11 @@ const pushedUnits = computed(() =>
 /**
  * 预览区该看哪个 surface。
  *
- * 两种推送都写 `STREAM_SURFACE_ID`，下拉切换的批量 mock 写的是各自的 surfaceId，
- * 三者共用同一个 store。规则很简单：**只要推送过（推过任何一片/一条）就看流式那份**，
- * 否则看下拉选中的 mock。下拉或模式一旦切换都会调用 `resetStream()` 把游标归零，自动切回来。
+ * 批量渲染与流式推送现在共用**同一份数据源**（下拉选中的 mock），写进同一个 store 的
+ * 也是同一个 surfaceId，所以预览始终看 `activeMock.surfaceId`。下拉或模式一旦切换都会调用
+ * `resetStream()` 把游标归零、清空 store，再重新解析当前 mock。
  */
-const activeSurfaceId = computed(() =>
-  pushedUnits.value > 0 ? STREAM_SURFACE_ID : activeMock.value.surfaceId,
-);
+const activeSurfaceId = computed(() => activeMock.value.surfaceId);
 
 /** 把 VNode 压成一行摘要，避免 JSON.stringify 撞上 VNode 的循环引用。 */
 const describeVNode = (vnode: VNode): string => {
@@ -481,6 +497,47 @@ const treeOutline = computed(() => {
   walk(root, '', true, true);
 
   return lines.join('\n');
+});
+
+/**
+ * 当前预览 surface 的数据模型，data-binding demo 用它实时展示「写回」的结果。
+ * 其它 mock（如 product-card）也带 path 绑定，同样适用；取不到时返回 null。
+ */
+const activeDataModel = computed(() => storeState.value?.dataModelMap[activeSurfaceId.value] ?? null);
+
+/** 数据模型的格式化 JSON，直接渲染进提示条。 */
+const activeDataModelJson = computed(() =>
+  activeDataModel.value === null ? '' : JSON.stringify(activeDataModel.value, null, 2),
+);
+
+/** 提示条标题：按当前 surface 区分「写回」与「只读绑定」。 */
+const bindingHintTitle = computed(() => {
+  if (activeSurfaceId.value === 'data-binding') return '数据绑定验证（写回）';
+  if (activeSurfaceId.value === 'list-template') return '数据模型绑定（List 动态渲染）';
+  if (activeSurfaceId.value === 'shopping-cart') return '购物车列表（List 模板 + 合计绑定）';
+  return '数据模型绑定';
+});
+
+/**
+ * 非 data-binding 的提示说明（data-binding 走上面的三步交互列表）。
+ * list-template 讲清楚 List 的 template 绑定怎么驱动渲染；其余带数据模型的 mock（如
+ * product-card、column-row-mix）给一句通用的 path 绑定说明。
+ */
+const bindingHintDesc = computed(() => {
+  if (activeSurfaceId.value === 'list-template') {
+    return (
+      'List 的 children.template 绑定 /items，按 valueMap 的 3 个 item 各渲染一张卡片；' +
+      '卡片内 Text 的相对路径 /items/item/name、/items/item/desc 解析到各 item 的值。'
+    );
+  }
+  if (activeSurfaceId.value === 'shopping-cart') {
+    return (
+      'List 的 children.template 绑定 /cart/items，按 valueMap 的 3 个条目各渲染一张卡片；' +
+      '卡片内 Image / Text 的相对路径 /cart/items/item/image、name、desc、price、qty 解析到各条目；' +
+      '底部「合计」Text 绑定 /cart/total，与列表同源于一份数据模型。'
+    );
+  }
+  return '下面 JSON 是当前 surface 的数据模型（dataModelMap 的实时内容），组件通过 path 绑定到它的字段。';
 });
 
 /**
@@ -588,7 +645,7 @@ interface StreamMessage {
     surfaceId: string;
     components: Array<{ id: string; component: Record<string, unknown> }>;
   };
-  dataModelUpdate?: { surfaceId: string; contents: Array<{ key: string }> };
+  dataModelUpdate?: { surfaceId: string; path?: string; contents: Array<{ key: string }> };
   beginRendering?: { surfaceId: string; root: string };
   deleteSurface?: { surfaceId: string };
 }
@@ -605,10 +662,12 @@ const describeMessage = (line: string): { kind: string; detail: string } => {
     return { kind: 'surfaceUpdate', detail: `surface=${surfaceId} · ${list}` };
   }
   if (message.dataModelUpdate) {
-    const { surfaceId, contents } = message.dataModelUpdate;
+    const { surfaceId, path, contents } = message.dataModelUpdate;
+    // 带上 path：dataModelUpdate 会被补全成「一个叶子条目一条」，path 才是它落在数据模型的哪一层。
+    const where = path ? ` · ${path}` : '';
     return {
       kind: 'dataModelUpdate',
-      detail: `surface=${surfaceId} · ${contents.map((item) => item.key).join(', ')}`,
+      detail: `surface=${surfaceId}${where} · ${contents.map((item) => item.key).join(', ')}`,
     };
   }
   if (message.beginRendering) {
@@ -641,7 +700,7 @@ const snapshotStats = () => {
  * 只看 `compact[0]` 会数成 1。它用来给日志写「协议补全 · 第 k/N 条」。
  */
 const compactComponentCount = computed(() =>
-  STREAM_ORDERS[streamOrderIndex.value].compact.reduce((sum, line) => {
+  streamOrders.value[streamOrderIndex.value].compact.reduce((sum, line) => {
     const parsed = JSON.parse(line) as { surfaceUpdate?: { components: unknown[] } };
     return sum + (parsed.surfaceUpdate?.components.length ?? 0);
   }, 0),
@@ -982,6 +1041,54 @@ onBeforeUnmount(() => {
   color: #1f2937;
 }
 
+/* ── data-binding 验证提示 ── */
+
+.binding-hint {
+  margin-top: 1rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid #d6e8ff;
+  border-radius: 8px;
+  background: #f4f9ff;
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: #374151;
+}
+
+.binding-hint strong {
+  color: #1f2937;
+}
+
+.binding-hint ol {
+  margin: 0.4rem 0 0.5rem;
+  padding-left: 1.2rem;
+}
+
+.binding-desc {
+  margin: 0.4rem 0 0.5rem;
+}
+
+.binding-hint code {
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  background: #e6f0ff;
+  color: #2b5fa8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+}
+
+.binding-model {
+  margin: 0;
+  padding: 0.6rem 0.75rem;
+  overflow: auto;
+  border-radius: 6px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  color: #1f2937;
+}
+
 /* ── Stream 模拟面板 ── */
 
 .stream-panel {
@@ -1002,6 +1109,12 @@ onBeforeUnmount(() => {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.78rem;
   color: #1f2937;
+}
+
+.stream-desc__note {
+  display: block;
+  margin-top: 0.35rem;
+  color: #94a3b8;
 }
 
 .stream-controls {

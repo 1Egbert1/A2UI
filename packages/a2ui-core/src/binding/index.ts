@@ -28,12 +28,21 @@ const asRecord = (value: unknown): Record<string, unknown> | undefined =>
  *
  * path 兼容 `'/user/name'` 与 `'user/name'` 两种写法（按 `/` 切分并过滤空段），
  * 逐层下钻遇到非对象即返回 `undefined`。与 `dataModelUpdate` 的 path 语义保持一致。
+ *
+ * 中间层若为**数组**（如 `/items/0/name`），则该段按数字下标取值 —— 用于 List 的
+ * template 遍历裸数组（协议没有 valueArray，但宿主可能直塞数组进数据模型）。
  */
 export const readPath = (dataModel: Record<string, unknown>, path: string): unknown => {
   const segments = path.split('/').filter((segment) => segment !== '');
   let current: unknown = dataModel;
 
   for (const segment of segments) {
+    if (Array.isArray(current)) {
+      const index = Number(segment);
+      current = Number.isInteger(index) && index >= 0 ? current[index] : undefined;
+      continue;
+    }
+
     const record = asRecord(current);
     if (!record) {
       return undefined;
@@ -42,6 +51,43 @@ export const readPath = (dataModel: Record<string, unknown>, path: string): unkn
   }
 
   return current;
+};
+
+/**
+ * 按 path 把 `value` 写进数据模型，返回**新的**数据模型对象（immutable，不改入参）。
+ *
+ * 与 `readPath` 对称，是「客户端写回数据模型」的底层原语（表单控件交互时由
+ * `RenderContext.updateModel` 调起）。path 兼容 `'/user/name'` 与 `'user/name'`。
+ * 逐层下钻时，中间层若缺失或不是对象，会被当作空对象重建。
+ *
+ * path 为空表示「整体替换」：value 是对象时直接作为新数据模型返回，否则保守返回原对象。
+ */
+export const writePath = (
+  dataModel: Record<string, unknown>,
+  path: string,
+  value: unknown,
+): Record<string, unknown> => {
+  const segments = path.split('/').filter((segment) => segment !== '');
+
+  if (segments.length === 0) {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : dataModel;
+  }
+
+  const [head, ...rest] = segments;
+
+  if (rest.length === 0) {
+    // 最后一个 segment：直接把 value 写到 head，无需再下钻。
+    return { ...dataModel, [head]: value };
+  }
+
+  const existing = dataModel[head];
+  const child =
+    existing !== null && typeof existing === 'object' && !Array.isArray(existing)
+      ? (existing as Record<string, unknown>)
+      : {};
+  return { ...dataModel, [head]: writePath(child, rest.join('/'), value) };
 };
 
 /**

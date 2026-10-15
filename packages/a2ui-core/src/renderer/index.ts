@@ -19,6 +19,14 @@ export interface RenderContext {
   /** 该组件所属的 surface id。 */
   surfaceId: string;
   /**
+   * 模板 item 作用域标识。
+   *
+   * 静态组件为 `undefined`；通过 `template` 动态渲染出来的组件，是当前 item 的 key
+   * （如 `p1`）。渲染引擎据此给每个 item 的组件根生成**唯一 id**（`surfaceId-componentId-itemKey`），
+   * 避免「同一个模板组件被渲染 N 次」得到 N 个相同 id。
+   */
+  itemKey?: string;
+  /**
    * 取同一 surface 下另一个组件的已渲染结果；跨 surface、未登记或尚未渲染时返回 `null`。
    *
    * 子节点的解析顺序因此不受 hydrate 遍历顺序影响 —— 渲染函数应把它包进「延迟求值」
@@ -43,6 +51,45 @@ export interface RenderContext {
    * 幂等：重复调用无副作用（详见 store 的 markHydrateNodeMounted）。
    */
   markMounted: () => void;
+  /**
+   * 把本 surface 数据模型上某个 path（如 `/email`）写为 `value`，并触发一次派生状态刷新。
+   *
+   * 这是「客户端本地写回数据模型」的落点：表单控件在用户交互时（输入、勾选、拖动）
+   * 通过它把新值写回 store，随后 core 会重跑 hydrate + buildTree + renderTree，
+   * 让绑定了同一 path 的其它组件（如一个展示同值的 Text）跟着更新。
+   *
+   * 渲染引擎只跟这个函数打交道，不需要知道 store 的结构，也不必自己触发重渲染——
+   * 刷新时机由 core 决定（与 `renderTree` 的「渲染时机归 SDK」一脉相承）。
+   */
+  updateModel: (path: string, value: unknown) => void;
+  /**
+   * 按数据列表动态渲染模板组件的子项（`children.template` 的落点）。
+   *
+   * - `componentId`：作为模板的组件，数据列表里每个 item 渲染它一次；
+   * - `dataBinding`：指向数据模型里集合（对象 map 或数组）的 path，如 `/items`。
+   *
+   * 对集合里的每个 item，用「相对绑定」渲染一份模板组件：模板（及其子树）内部 `path`
+   * 里等于 `item` 的段会被替换成当前 item 的 key（官方示例 `/items/item/name` →
+   * `/items/<key>/name`）。
+   *
+   * 返回**带 key 的条目列表**而不是裸节点数组，是为了让渲染引擎能把集合里的 key 当作子节点的
+   * 稳定身份（框架的 `key` / `trackBy`）。列表是数据驱动的：中间插入或删除一项时，位置会整体
+   * 平移，若按「第 n 个」去复用节点，内容就会错位到别的 item 上。带上 key，框架才能把节点
+   * 跟着它的 item 一起移动。
+   *
+   * 为什么放在 core 而不是渲染引擎：展开需要「读组件协议 + 递归调用渲染函数」，
+   * 这些只有 core 的 hydrate 才够得着；渲染引擎（如 renderList）拿到这个方法后，
+   * 只负责把返回的一组节点摆进布局。
+   */
+  renderTemplate: (componentId: string, dataBinding: string) => TemplateItem[];
+}
+
+/** `renderTemplate` 展开出的一个 item：集合里的键 + 用它渲染出来的节点。 */
+export interface TemplateItem {
+  /** 数据集合里的键（对象 map 的键，或裸数组的下标字符串），形如 `c1`。 */
+  key: string;
+  /** 用模板组件渲染这个 item 得到的节点；渲染不出东西时为 `null`。 */
+  node: unknown;
 }
 
 /** 单个组件的渲染函数：入参是该组件的属性对象与渲染上下文，返回本框架的渲染节点实例。 */

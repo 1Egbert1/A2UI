@@ -1,4 +1,5 @@
 export * from './parser';
+export * from './scheduler';
 export * from './renderer';
 export * from './tree-render';
 export * from './vnode';

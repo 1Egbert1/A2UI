@@ -48,7 +48,7 @@ export const childOf = (resolve: (componentId: string) => unknown, componentId: 
 export const nodeOf = (resolve: () => unknown) => h(A2UINode, { resolve });
 
 /**
- * 给渲染结果的**根元素**补上组件 id，格式 `${surfaceId}-${componentId}`。
+ * 给渲染结果的**根元素**补上组件 id。
  *
  * 为什么要包一层而不是在每个渲染器里手写：id 不属于任何组件的协议属性
  * （standard_catalog_definition.json 里没有组件声明 `id`），逐组件写 18 遍既重复又
@@ -57,10 +57,15 @@ export const nodeOf = (resolve: () => unknown) => h(A2UINode, { resolve });
  * 为什么带 surfaceId 前缀：componentId 只在**单个 surface 内**唯一，多个 surface
  * 各自都有 `root` 是常态，裸 componentId 当 id 必撞。
  *
+ * 为什么再叠加 itemKey 后缀（模板场景）：`children.template` 会把同一个模板组件渲染
+ * N 次（每个 item 一次），这些实例的 componentId 完全相同，仅靠 `surfaceId-componentId`
+ * 会得到 N 个相同 id。此时 core 会在 `context.itemKey` 上给出当前 item 的 key，
+ * 拼上它后每个 item 的组件根 id 才唯一（`surfaceId-componentId-itemKey`）。
+ *
  * 关于「全局唯一」：本 store 的 hydrateNodeMap 是按 componentId 索引的**扁平表**
  * （见 a2ui-core/src/store），因此 componentId 在整个 store 内已隐含唯一；
  * 再叠加 surfaceId 前缀后，`surfaceId-componentId` 对不同 (surface, component) 组合
- * 两两不同。
+ * 两两不同；模板 item 再叠加 itemKey，同一 (surface, component) 的多个 item 也各自不同。
  *
  * 唯一残留边界：**同一组件被 DAG 展开多次**（同一 surface 内 componentId 被两个父节点
  * 同时引用）。treebuilder 会把它展开成两份 TreeNode，但它们指向**同一个 `_vnode` 实例**，
@@ -76,5 +81,29 @@ export const nodeOf = (resolve: () => unknown) => h(A2UINode, { resolve });
 export const withRootId = (renderer: ComponentRenderer<VueNode>): ComponentRenderer<VueNode> =>
   (props, context) => {
     const node = renderer(props, context);
-    return isVNode(node) ? cloneVNode(node, { id: `${context.surfaceId}-${context.componentId}` }) : node;
+    if (!isVNode(node)) {
+      return node;
+    }
+    const id = context.itemKey
+      ? `${context.surfaceId}-${context.componentId}-${context.itemKey}`
+      : `${context.surfaceId}-${context.componentId}`;
+    return cloneVNode(node, { id });
   };
+
+/**
+ * 给节点挂上渲染框架的 `key` —— 集合项的**稳定身份**。
+ *
+ * 数据驱动的列表（`children.template`）在中间插入或删除一项时，后面所有项的位置都会平移。
+ * 没有 key 时 Vue 只能按「第 n 个」复用 DOM，于是把 c1 的内容 patch 到 c2 的位置上，表现为
+ * **内容错位**（不是闪烁，是串）。带上集合的 key，Vue 会把节点跟着它的 item 一起移动。
+ *
+ * 与 `withRootId` 用同一套机制（`cloneVNode` 合并属性）：`key` 是 Vue 的 diff 元信息，
+ * 不会渲染成 DOM 属性。非 vnode（字符串 / 数字 / null）原样返回 —— 它们没有身份，
+ * 也不需要被追踪。
+ */
+export const withKey = (value: VNodeChild, key: string): VNodeChild => {
+  if (!isVNode(value)) {
+    return value;
+  }
+  return cloneVNode(value, { key });
+};

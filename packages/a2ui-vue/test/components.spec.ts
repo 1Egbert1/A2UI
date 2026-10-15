@@ -201,17 +201,60 @@ describe('A2UI Vue 组件渲染器', () => {
       assert.match(html, /flex-direction:row/);
     });
 
-    it('should record an UNSUPPORTED_FEATURE error for children.template', () => {
-      renderColumn(
-        { children: { template: { componentId: 'x', dataBinding: '/items' } } },
-        fakeContext({ componentId: 'board', surfaceId: 's' }),
+    it('should expand children.template through renderTemplate', async () => {
+      const calls: Array<[string, string]> = [];
+      const context = fakeContext({
+        componentId: 'board',
+        surfaceId: 's',
+        renderTemplate: (componentId: string, dataBinding: string) => {
+          calls.push([componentId, dataBinding]);
+          return [{ key: 'i0', node: h('span', null, 'ITEM') }];
+        },
+      });
+
+      const html = await renderHtml(
+        renderColumn({ children: { template: { componentId: 'x', dataBinding: '/items' } } }, context),
       );
 
-      const errors = Object.values(getAllErrors());
-      assert.equal(errors.length, 1, 'unsupported 形态应显式记一条错误，而不是静默渲染空容器');
-      assert.equal(errors[0].type, ErrorType.UNSUPPORTED_FEATURE);
-      assert.match(errors[0].content, /template/);
-      assert.match(errors[0].content, /board/);
+      assert.deepEqual(calls, [['x', '/items']], 'template 应调用 renderTemplate(componentId, dataBinding)');
+      assert.match(html, /ITEM/, 'renderTemplate 返回的节点应渲染进容器');
+    });
+
+    it('should key template items by the collection key so they move with their item', () => {
+      const context = fakeContext({
+        componentId: 'board',
+        surfaceId: 's',
+        renderTemplate: () => [
+          { key: 'c1', node: h('span', null, 'A') },
+          { key: 'c2', node: h('span', null, 'B') },
+          { key: 'c3', node: h('span', null, 'C') },
+        ],
+      });
+
+      const vnode = renderList(
+        { children: { template: { componentId: 'x', dataBinding: '/items' } } },
+        context,
+      ) as VNode;
+      const children = vnode.children as VNode[];
+
+      assert.deepEqual(
+        children.map((child) => child.key),
+        ['c1', 'c2', 'c3'],
+        '每个模板子节点应带上集合的 key（插入/删除时 Vue 才能跟着 item 移动节点）',
+      );
+    });
+
+    it('should leave explicitList children unkeyed (protocol order is static)', () => {
+      const context = fakeContext({ nodes: { a: h('span', null, 'A'), b: h('span', null, 'B') } });
+
+      const vnode = renderRow({ children: { explicitList: ['a', 'b'] } }, context) as VNode;
+      const children = vnode.children as VNode[];
+
+      assert.deepEqual(
+        children.map((child) => child.key ?? null),
+        [null, null],
+        'explicitList 由协议写死、顺序不会变，不需要 key',
+      );
     });
 
     it('should treat a missing children property as empty', async () => {

@@ -5,7 +5,7 @@ import { createSSRApp } from 'vue';
 import { renderToString } from 'vue/server-renderer';
 import type { VNode } from 'vue';
 
-import { readPath, type RenderContext } from 'a2ui-core';
+import { readPath, type RenderContext, type TemplateItem } from 'a2ui-core';
 
 /** 用 SSR 把 vnode 渲成 HTML 字符串 —— 组件测试都在 Node 里跑，不开浏览器。 */
 export const renderHtml = (vnode: VNode | null): Promise<string> =>
@@ -22,6 +22,10 @@ interface ContextOptions {
   hasMounted?: boolean;
   /** 入场动画结束时的回调；默认是个记录不到任何东西的空函数。 */
   markMounted?: () => void;
+  /** 写回数据模型的回调；默认是个记录不到任何东西的空函数。 */
+  updateModel?: (path: string, value: unknown) => void;
+  /** 按数据列表渲染模板组件的回调；默认返回空数组（不渲染任何子项）。 */
+  renderTemplate?: (componentId: string, dataBinding: string) => TemplateItem[];
 }
 
 /** 手搓一个渲染上下文，用来单独驱动某个组件的渲染函数。 */
@@ -32,6 +36,8 @@ export const fakeContext = ({
   data = {},
   hasMounted = false,
   markMounted = () => {},
+  updateModel = () => {},
+  renderTemplate = () => [],
 }: ContextOptions = {}): RenderContext => ({
   componentId,
   surfaceId,
@@ -39,6 +45,8 @@ export const fakeContext = ({
   read: (path: string) => readPath(data, path),
   hasMounted,
   markMounted,
+  updateModel,
+  renderTemplate,
 });
 
 /** 把官方示例的 JSON 数组转成 JSONL（每行一条消息），与线上协议一致。 */

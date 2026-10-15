@@ -1,7 +1,7 @@
-import { defineComponent, h, ref, type PropType } from 'vue';
-import { readString, recordError, ErrorType, type ComponentRenderer } from 'a2ui-core';
+import { defineComponent, h, ref, type PropType, type VNodeChild } from 'vue';
+import { readString, type ComponentRenderer, type RenderContext } from 'a2ui-core';
 
-import { childOf, type VueNode } from '../internal/node';
+import { childOf, normalizeNode, withKey, type VueNode } from '../internal/node';
 import { alignOf, flexContainer, GAP, justifyOf } from '../internal/styles';
 
 /**
@@ -21,24 +21,37 @@ const explicitChildren = (children: unknown): string[] => {
 };
 
 /**
- * 解析 children。协议给了两种形态：`explicitList`（固定子节点）与
- * `template`（按数据列表动态生成子节点）。后者需要把模板组件绑定到数据项上，
- * 尚未实现——这里显式记一条错误，而不是安静地渲染出一个空容器。
+ * 解析 children 得到**子节点列表**。协议给了两种形态：
+ *
+ * - `explicitList`：固定的 componentId 数组 → 各自生成一个延迟解析的占位。这里**不加 key**：
+ *   列表由协议写死，运行期顺序不会变，位置本身就是稳定的身份，加 key 只是噪音
+ *   （同一 componentId 被 DAG 展开两次时反而会撞 key）。
+ * - `template`：`{ componentId, dataBinding }` → 交给 `context.renderTemplate`，按数据列表
+ *   逐个渲染模板组件，直接拿到一组已渲染节点。这里**要加 key**：集合是数据驱动的，中间插入
+ *   或删除会让位置整体平移，没有稳定 key 就会把内容错位到别的 item 上（详见 `withKey`）。
+ *
+ * template 的展开在 core（`renderTemplate`）里做：它要读组件协议 + 递归调用渲染函数，
+ * 容器这里只负责把返回的节点摆进布局。
  */
-const resolveChildren = (
-  children: unknown,
-  context: { componentId: string; surfaceId: string; resolve: (id: string) => unknown },
-  componentType: string,
-): string[] => {
+const resolveChildNodes = (children: unknown, context: RenderContext): VNodeChild[] => {
   const record = children as { explicitList?: unknown; template?: unknown } | null;
-  if (record && record.template) {
-    recordError(
-      ErrorType.UNSUPPORTED_FEATURE,
-      `surface "${context.surfaceId}" 的 ${componentType} 组件 "${context.componentId}" 使用了 ` +
-        `children.template（按数据列表动态生成子节点），该形态尚未实现，容器会按空处理。`,
-    );
+  if (!record) {
+    return [];
   }
-  return explicitChildren(children);
+
+  if (record.template !== null && typeof record.template === 'object') {
+    const template = record.template as { componentId?: unknown; dataBinding?: unknown };
+    const componentId = typeof template.componentId === 'string' ? template.componentId : '';
+    const dataBinding = typeof template.dataBinding === 'string' ? template.dataBinding : '';
+    if (!componentId || !dataBinding) {
+      return [];
+    }
+    return context
+      .renderTemplate(componentId, dataBinding)
+      .map((item) => withKey(normalizeNode(item.node), item.key));
+  }
+
+  return explicitChildren(children).map((id) => childOf(context.resolve, id));
 };
 
 /** Row：主轴水平，distribution → justify-content，alignment → align-items。 */
@@ -52,7 +65,7 @@ export const renderRow: ComponentRenderer<VueNode> = (props, context) =>
         alignItems: alignOf(props.alignment),
       },
     },
-    resolveChildren(props.children, context, 'Row').map((id) => childOf(context.resolve, id)),
+    resolveChildNodes(props.children, context),
   );
 
 /** Column：主轴垂直。 */
@@ -66,7 +79,7 @@ export const renderColumn: ComponentRenderer<VueNode> = (props, context) =>
         alignItems: alignOf(props.alignment),
       },
     },
-    resolveChildren(props.children, context, 'Column').map((id) => childOf(context.resolve, id)),
+    resolveChildNodes(props.children, context),
   );
 
 /** List：direction 决定排布方向，alignment 决定交叉轴对齐。 */
@@ -81,7 +94,7 @@ export const renderList: ComponentRenderer<VueNode> = (props, context) => {
         alignItems: alignOf(props.alignment),
       },
     },
-    resolveChildren(props.children, context, 'List').map((id) => childOf(context.resolve, id)),
+    resolveChildNodes(props.children, context),
   );
 };
 

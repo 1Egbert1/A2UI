@@ -1,4 +1,4 @@
-import { defineComponent, h, ref, type PropType } from 'vue';
+import { defineComponent, h, ref, watch, type PropType } from 'vue';
 import {
   ErrorType,
   readNumber,
@@ -27,6 +27,20 @@ const readBooleanValue = (value: unknown, read: (path: string) => unknown): bool
     }
   }
   return false;
+};
+
+/**
+ * 从取值对象里提取 `path`（仅当它是字符串时）。
+ *
+ * 表单控件的 `value` / `text` / `selections` 都是取值对象（`{ path }` 或 `{ literal* }`）。
+ * 只有带 `path` 的才需要「写回」——纯字面量是静态值，写回没有意义（也没有目标）。
+ */
+const boundPath = (value: unknown): string | undefined => {
+  if (value !== null && typeof value === 'object') {
+    const record = value as { path?: unknown };
+    return typeof record.path === 'string' ? record.path : undefined;
+  }
+  return undefined;
 };
 
 /** 表单类控件的共用样式。 */
@@ -90,9 +104,11 @@ export const renderButton: ComponentRenderer<VueNode> = (props, context) =>
     [childOf(context.resolve, String(props.child ?? ''))],
   );
 
-/** CheckBox：label 与 value 都支持字面量或 path。 */
-export const renderCheckBox: ComponentRenderer<VueNode> = (props, context) =>
-  h(
+/** CheckBox：label 与 value 都支持字面量或 path；value 带 path 时勾选会写回数据模型。 */
+export const renderCheckBox: ComponentRenderer<VueNode> = (props, context) => {
+  const path = boundPath(props.value);
+
+  return h(
     'label',
     {
       style: {
@@ -104,10 +120,17 @@ export const renderCheckBox: ComponentRenderer<VueNode> = (props, context) =>
       },
     },
     [
-      h('input', { type: 'checkbox', checked: readBooleanValue(props.value, context.read) }),
+      h('input', {
+        type: 'checkbox',
+        checked: readBooleanValue(props.value, context.read),
+        onChange: path
+          ? (event: Event) => context.updateModel(path, (event.target as HTMLInputElement).checked)
+          : undefined,
+      }),
       h('span', null, readString(props.label, context.read)),
     ],
   );
+};
 
 /** TextField.textFieldType → 原生 input type；longText 单独走 textarea。 */
 const TEXT_FIELD_INPUT_TYPES: Record<string, string> = {
@@ -117,20 +140,25 @@ const TEXT_FIELD_INPUT_TYPES: Record<string, string> = {
   date: 'date',
 };
 
-/** TextField：label 必需，text 为初值，textFieldType 决定控件形态。 */
+/** TextField：label 必需，text 为初值，textFieldType 决定控件形态；text 带 path 时输入会写回。 */
 export const renderTextField: ComponentRenderer<VueNode> = (props, context) => {
   const label = readString(props.label, context.read);
   const value = readString(props.text, context.read);
   const kind = String(props.textFieldType ?? 'shortText');
   const pattern = typeof props.validationRegexp === 'string' ? props.validationRegexp : undefined;
+  const path = boundPath(props.text);
+  const onInput = path
+    ? (event: Event) => context.updateModel(path, (event.target as HTMLInputElement).value)
+    : undefined;
 
   const control =
     kind === 'longText'
-      ? h('textarea', { rows: 3, value, style: CONTROL_STYLE })
+      ? h('textarea', { rows: 3, value, onInput, style: CONTROL_STYLE })
       : h('input', {
           type: TEXT_FIELD_INPUT_TYPES[kind] ?? 'text',
           value,
           pattern,
+          onInput,
           style: CONTROL_STYLE,
         });
 
@@ -140,16 +168,20 @@ export const renderTextField: ComponentRenderer<VueNode> = (props, context) => {
   ]);
 };
 
-/** DateTimeInput：enableDate / enableTime 组合出三种原生控件。 */
+/** DateTimeInput：enableDate / enableTime 组合出三种原生控件；value 带 path 时选择会写回。 */
 export const renderDateTimeInput: ComponentRenderer<VueNode> = (props, context) => {
   const enableTime = props.enableTime === true;
   const enableDate = props.enableDate !== false;
+  const path = boundPath(props.value);
 
   const type = enableDate && enableTime ? 'datetime-local' : enableTime ? 'time' : 'date';
 
   return h('input', {
     type,
     value: readString(props.value, context.read),
+    onChange: path
+      ? (event: Event) => context.updateModel(path, (event.target as HTMLInputElement).value)
+      : undefined,
     style: CONTROL_STYLE,
   });
 };
@@ -198,21 +230,34 @@ const A2UIMultipleChoice = defineComponent({
     variant: { type: String, default: 'checkbox' },
     filterable: { type: Boolean, default: false },
     maxAllowedSelections: { type: Number, default: 0 },
+    /** selections 带 path 时，勾选变化会把新数组写回数据模型；纯字面量时为 undefined。 */
+    onUpdate: { type: Function as PropType<(selections: string[]) => void>, default: undefined },
   },
   setup(props) {
     const selected = ref<string[]>([...props.selections]);
     const keyword = ref('');
 
+    // 数据模型可能被外部（服务端 dataModelUpdate 或其它控件写回同一 path）更新，
+    // 这里把外部变化同步回本地勾选状态，保证受控组件的值始终反映数据模型。
+    watch(
+      () => props.selections,
+      (next) => {
+        selected.value = [...next];
+      },
+    );
+
     const toggle = (value: string) => {
+      let next: string[];
       if (selected.value.includes(value)) {
-        selected.value = selected.value.filter((item) => item !== value);
+        next = selected.value.filter((item) => item !== value);
+      } else if (props.maxAllowedSelections > 0 && selected.value.length >= props.maxAllowedSelections) {
+        // maxAllowedSelections 为 0 / 负数表示不限。
         return;
+      } else {
+        next = [...selected.value, value];
       }
-      // maxAllowedSelections 为 0 / 负数表示不限。
-      if (props.maxAllowedSelections > 0 && selected.value.length >= props.maxAllowedSelections) {
-        return;
-      }
-      selected.value = [...selected.value, value];
+      selected.value = next;
+      props.onUpdate?.(next);
     };
 
     return () => {
@@ -308,6 +353,8 @@ export const renderMultipleChoice: ComponentRenderer<VueNode> = (props, context)
     return null;
   }
 
+  const path = boundPath(props.selections);
+
   return h(A2UIMultipleChoice, {
     options: parseOptions(props.options, context.read),
     selections: readStringArray(props.selections, context.read),
@@ -315,19 +362,24 @@ export const renderMultipleChoice: ComponentRenderer<VueNode> = (props, context)
     filterable: props.filterable === true,
     maxAllowedSelections:
       typeof props.maxAllowedSelections === 'number' ? props.maxAllowedSelections : 0,
+    onUpdate: path ? (selections: string[]) => context.updateModel(path, selections) : undefined,
   });
 };
 
-/** Slider：minValue / maxValue 是普通数字，value 是取值对象。 */
+/** Slider：minValue / maxValue 是普通数字，value 是取值对象；value 带 path 时拖动会写回。 */
 export const renderSlider: ComponentRenderer<VueNode> = (props, context) => {
   const min = typeof props.minValue === 'number' ? props.minValue : 0;
   const max = typeof props.maxValue === 'number' ? props.maxValue : 100;
+  const path = boundPath(props.value);
 
   return h('input', {
     type: 'range',
     min,
     max,
     value: readNumber(props.value, context.read, min),
+    onInput: path
+      ? (event: Event) => context.updateModel(path, Number((event.target as HTMLInputElement).value))
+      : undefined,
     style: { width: '100%' },
   });
 };

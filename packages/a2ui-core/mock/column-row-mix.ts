@@ -6,7 +6,14 @@
  *
  * 每个元素是**一行 A2UI JSONL 消息**（一条 server → client 消息），数组顺序即发送顺序。
  * 用「字符串数组」而不是整段字符串，是为了让流式模拟能逐条 `push()`。
+ *
+ * 下面导出的四种形态（协议顺序 / 流式友好 × 逐条 / 紧凑）由 `./stream` 里的通用函数派生，
+ * 不再手工维护——其它 mock 也能用同一套函数随时派生，供 Stream 面板跟随下拉实时切换。
  */
+
+import { compactSurfaceUpdates, toStreamFriendly, toStreamFriendlyCompact } from './stream';
+
+export { compactSurfaceUpdates } from './stream';
 
 export const columnRowMixMessages: string[] = [
   `{"surfaceUpdate":{"surfaceId":"column-row-mix","components":[{"id":"root","component":{"Column":{"children":{"explicitList":["title","subtitle","divider-top","overview-row","divider-bottom","footer-row"]},"distribution":"start","alignment":"stretch"}}}]}}`, // #01 surfaceUpdate · root(Column)
@@ -47,85 +54,19 @@ export const columnRowMixMessages: string[] = [
  * surface 要等最后一条 `beginRendering` 才诞生（`Surface.rootNode` 必须先知道根是谁），
  * 所以前 27 条推完组件都登记齐了、树却还是空的、页面一片空白。
  *
- * 把 `beginRendering` 提前到第 2 条之后，root 一到 surface 就成立，后续子组件每到达一条
+ * 把 `beginRendering` 提前到 root 之后，root 一到 surface 就成立，后续子组件每到达一条
  * 就挂上一批，预览区能真的「边到边长大」。两条消息内容一模一样，只是顺序不同。
  */
-export const columnRowMixStreamMessages: string[] = (() => {
-  const messages = columnRowMixMessages.map((message) => message);
-  const index = messages.findIndex((message) => message.includes('"beginRendering"'));
-  const [beginRendering] = messages.splice(index, 1);
-  messages.splice(1, 0, beginRendering);
-  return messages;
-})();
-
-
-/**
- * 把一组 JSONL 里**所有 surfaceUpdate 合并成一条**（components 拼在一起），其余消息保持
- * 原有相对顺序。合并后的位置取「第一条 surfaceUpdate 所在处」。
- *
- * 这是 `createA2UIBuffer` 的**反向操作**：buffer 把一条多组件的 surfaceUpdate 拆成 N 条
- * 独立消息，这里把 N 条压回 1 条。留它专门用来演示「协议补全」在做什么——同一份数据，
- * 紧凑形态进、补全形态出，component 数量一致、消息数量差一个数量级。
- */
-export const compactSurfaceUpdates = (lines: string[]): string[] => {
-  let surfaceId: string | undefined;
-  const components: unknown[] = [];
-  const passthrough = new Set<number>();
-  let firstSurfaceUpdate = -1;
-
-  lines.forEach((line, index) => {
-    const message = JSON.parse(line) as {
-      surfaceUpdate?: { surfaceId: string; components: unknown[] };
-    };
-
-    if (message.surfaceUpdate) {
-      surfaceId = message.surfaceUpdate.surfaceId;
-      components.push(...message.surfaceUpdate.components);
-      if (firstSurfaceUpdate < 0) {
-        firstSurfaceUpdate = index;
-      }
-      return;
-    }
-
-    passthrough.add(index);
-  });
-
-  // 一条 surfaceUpdate 都没有：原样返回，不做无谓的重排。
-  if (firstSurfaceUpdate < 0) {
-    return [...lines];
-  }
-
-  const merged = JSON.stringify({ surfaceUpdate: { surfaceId, components } });
-  const result: string[] = [];
-  lines.forEach((line, index) => {
-    if (index === firstSurfaceUpdate) {
-      result.push(merged);
-      return;
-    }
-    if (passthrough.has(index)) {
-      result.push(line);
-    }
-  });
-  return result;
-};
+export const columnRowMixStreamMessages: string[] = toStreamFriendly(columnRowMixMessages);
 
 /** 紧凑版（协议顺序）：26 条组件 surfaceUpdate 压成 1 条。 */
 export const columnRowMixCompactMessages: string[] = compactSurfaceUpdates(columnRowMixMessages);
 
 /**
- * 紧凑版（流式友好）：**保住 beginRendering 紧随 root**。
- *
- * 不能对 `columnRowMixStreamMessages` 整体做 `compactSurfaceUpdates` —— 那会把合并后的大
- * surfaceUpdate 放回「第一条 surfaceUpdate」的位置（index 0），beginRendering 只能跟在它后面，
- * 「紧随 root」就失效了（26 个组件一起到，预览仍是一次性出现）。
- *
- * 所以手工分两段：root 单独一条 → beginRendering → 其余 25 个组件压成一条。字符流喂进去时：
- * root 到 → root 登记；beginRendering 到 → surface 成立、树有 1 个节点；随后那条装了 25 个组件
- * 的大 surfaceUpdate 边吐边被 buffer 逐个抽出（`extractPartialItems`），组件逐个登记、树逐层长大
- * —— 这才是「前端真的在 stream」。
+ * 紧凑版（流式友好）：**保住 beginRendering 紧随 root**。root 单独一条 → beginRendering →
+ * 其余 25 个组件压成一条。字符流喂进去时：root 到 → root 登记；beginRendering 到 → surface
+ * 成立、树有 1 个节点；随后那条大 surfaceUpdate 边吐边被 buffer 逐个抽出，组件逐个登记。
  */
-export const columnRowMixCompactStreamMessages: string[] = (() => {
-  const [rootUpdate, beginRendering] = columnRowMixStreamMessages;
-  const others = columnRowMixStreamMessages.slice(2);
-  return [rootUpdate as string, beginRendering as string, ...compactSurfaceUpdates(others)];
-})();
+export const columnRowMixCompactStreamMessages: string[] = toStreamFriendlyCompact(
+  columnRowMixMessages,
+);

@@ -7,7 +7,8 @@
 
 import { recordError } from '../error';
 import { hydrate } from '../hydrate';
-import { getA2UIStore, setTrees } from '../store';
+import { getRefreshScheduler } from '../scheduler';
+import { getA2UIStore, setModelChangeNotifier, setTrees } from '../store';
 import { ErrorType } from '../store/types';
 import { renderTree } from '../tree-render';
 import { buildTree } from '../treebuilder';
@@ -99,8 +100,11 @@ export const ingestLine = (line: string, position: string): void => {
  *
  * 两件事都不适合逐行做——surfaceUpdate 只登记节点，根节点要等 beginRendering 才确定，
  * 数据模型要等 dataModelUpdate 才齐，容器子节点还可能是前向引用。因此它们是「一批输入
- * 处理完之后」的动作：一次性解析在整段末尾调一次，流式解析在每次 `push` 末尾调一次，
- * 保证任何时刻 store 都自洽可渲染。
+ * 处理完之后」的动作。
+ *
+ * **本函数是同步原语**：调用即算完。需要**合帧**的调用方（流式推送、表单写回）请用
+ * `requestDerivedStateRefresh()`；需要「当场拿到最终 store」的同步入口用
+ * `flushDerivedStateRefresh()`。
  *
  * `renderTree(trees)` 就是「渲染时机」的落点：宿主在 `init` 时交出「怎么渲染」，
  * 由这里决定「什么时候渲染」——每次建树之后都算组件树变了一次。
@@ -113,3 +117,47 @@ export const refreshDerivedState = (): void => {
   setTrees(trees);
   renderTree(trees);
 };
+
+/** 是否有一次刷新已经请求、但还没执行。 */
+let pendingRefresh = false;
+
+/** 执行「挂起的那一次」刷新；没有挂起时什么都不做。 */
+const runPendingRefresh = (): void => {
+  if (!pendingRefresh) {
+    return;
+  }
+  pendingRefresh = false;
+  refreshDerivedState();
+};
+
+/**
+ * 请求一次刷新（**合帧**）：同一批内多次请求只会真正跑一次，具体时机交给调度器
+ * （见 `../scheduler`：浏览器合并到下一帧，Node / SSR 退化为同步）。
+ *
+ * 流式路径（`createJSONLStream.push` / `createA2UIBuffer.push`）与数据模型写回
+ * （`updateModel`）都走这里——它们都可能在一帧内触发多次，而派生状态是**全量重算**，
+ * 拿同一份输入重复跑是纯浪费。
+ */
+export const requestDerivedStateRefresh = (): void => {
+  if (pendingRefresh) {
+    return;
+  }
+  pendingRefresh = true;
+  getRefreshScheduler()(runPendingRefresh);
+};
+
+/**
+ * 立即同步刷新，并**取消**挂起的那一次。
+ *
+ * 给「必须当场拿到最终 store」的入口用——目前是 `parseA2UI`（契约是同步返回解析完的
+ * 快照）。取消挂起项是为了避免随后又白跑一遍：内容相同，全量重算没有意义。
+ */
+export const flushDerivedStateRefresh = (): void => {
+  pendingRefresh = false;
+  refreshDerivedState();
+};
+
+// 客户端写回数据模型（RenderContext.updateModel → updateDataModelPath）后，由这里触发一次
+// 派生状态刷新（合帧）。注册放在文件末尾：这两个都是 const 箭头函数，声明不提升，
+// 必须先定义后引用。store 层通过这个注入打破「store → parser」的依赖环。
+setModelChangeNotifier(requestDerivedStateRefresh);

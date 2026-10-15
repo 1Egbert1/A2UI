@@ -19,10 +19,23 @@
  * 前端看到的还是「一次性全出现」。所以本模块在**两个粒度**上都做补全：
  *
  * 1. **子项粒度（增量，`extractPartialItems`）**：值**还没闭合**时，只要其中一个
- *    `components[i]` 自己闭合了，就立刻把它**补全成一条独立、完整、可解析**的 surfaceUpdate
- *    发出去 —— 这就是「边到边渲染」的关键，前端能看到组件一个个长出来。
+ *    `components[i]`（或数据条目）自己闭合了，就立刻把它**补全成一条独立、完整、可解析**的
+ *    消息发出去 —— 这就是「边到边渲染」的关键，前端能看到组件一个个长出来。
  * 2. **整值粒度（兜底）**：值闭合时（`scanJSONValues`）走 `normalizeToJSONL`，把这条消息里
  *    **剩下**还没吐过的子项补齐（已经增量吐过的会被跳过，不重复）。
+ *
+ * ## dataModelUpdate：递归摊平到叶子
+ *
+ * A2UI 的数据模型没有原生数组——「列表」是 `valueMap` 还原出来的**对象 map**，
+ * 嵌套可以任意深（`cart → items → c1/c2/c3 → 字段`）。所以 `dataModelUpdate` 的拆分比
+ * `surfaceUpdate` 多一层：除了拆 `contents` 数组，还要**递归下钻每个 `valueMap`**，
+ * 直到叶子条目，并把祖先的 key 依次接到 `path` 上（`/cart` → `/cart/items` →
+ * `/cart/items/c1`）。这样一条「一次性给整棵数据树」的消息，才会被拆成「一条数据一条消息」，
+ * 前端能看着列表条目逐条长出来。
+ *
+ * 深度不设限是必须的：`contents` 下可能是对象（`cart`）、也可能是集合（`items`），
+ * 两者在协议里长得一模一样（都是带 `valueMap` 的条目），只有钻到叶子才不需要猜。
+ * 空 `valueMap` 保持原样成一条，避免把「空集合」拆没了。
  *
  * 两条粒度必须产出**逐字节相同**的 JSONL（对同一个组件），实现上靠 `completeItem` 复用
  * `normalizeToJSONL` 来保证；`buffer.spec.ts` 里「紧凑进 / 逐条出，终态必须 deepEqual」是硬约束。
@@ -42,16 +55,20 @@
  * 也就是说「push 的粒度 = 刷新的粒度」——想更细就让调用方喂更小的片。
  */
 
-import { ingestLine, refreshDerivedState } from './ingest';
+import { ingestLine, requestDerivedStateRefresh } from './ingest';
 
 /**
  * 已知的「批量消息」类型 → 载荷里可以逐个拆出的数组字段。
  *
  * 加新类型只需在这里登记一行：`normalizeToJSONL`（整值粒度）与 `extractPartialItems`
  * （子项粒度）共用同一张表，不会各拆各的。
+ *
+ * `dataModelUpdate` 的 `contents` 只是拆分的**起点**：它的条目还可能带 `valueMap`，
+ * 需要继续下钻（见 `flattenDataEntries` / `collectLeafEntries`），最终按叶子条目逐条产出。
  */
 const SPLIT_ARRAY_FIELDS: Record<string, string> = {
   surfaceUpdate: 'components',
+  dataModelUpdate: 'contents',
 };
 
 const WHITESPACE = new Set([' ', '\t', '\n', '\r']);
@@ -264,38 +281,108 @@ const closeUnclosedContainers = (prefix: string): string | null => {
   return stack.reverse().join('');
 };
 
+/** 判断一个值是不是普通对象（非 `null`、非数组）。 */
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+
+/**
+ * 把容器路径与条目 key 拼成 A2UI 的斜杠路径：`('', 'cart') → '/cart'`、
+ * `('/cart', 'items') → '/cart/items'`。`path` 缺省（`''`）或根（`'/'`）都归一成空前缀。
+ */
+const joinPath = (base: string, key: string): string => {
+  const prefix = base === '' || base === '/' ? '' : base.replace(/\/+$/, '');
+  return `${prefix}/${key}`;
+};
+
+/**
+ * 递归摊平 `dataModelUpdate` 的条目列表（整值粒度用）。
+ *
+ * - 带**非空** `valueMap` 的条目是容器：不产出自己，而是把 path 接上它的 key 后继续下钻；
+ * - 其余条目（叶子，或空 `valueMap`）原样产出。
+ *
+ * 与增量路径的 `collectLeafEntries` 是同一套遍历顺序，保证「整值拆分」与「边到边补全」
+ * 对同一条数据产出**逐字节相同**的 JSONL。
+ */
+const flattenDataEntries = (
+  entries: unknown[],
+  path: string,
+  emit: (path: string, entry: unknown) => void,
+): void => {
+  for (const entry of entries) {
+    if (
+      isRecord(entry) &&
+      typeof entry.key === 'string' &&
+      Array.isArray(entry.valueMap) &&
+      entry.valueMap.length > 0
+    ) {
+      flattenDataEntries(entry.valueMap, joinPath(path, entry.key), emit);
+      continue;
+    }
+
+    emit(path, entry);
+  }
+};
+
+/**
+ * 摊平一条**完整**的 `dataModelUpdate`：把嵌套 `valueMap` 拆到叶子，每个叶子一条独立消息
+ * （`surfaceId` 原样带上、`path` 换成该叶子所属容器的路径）。
+ *
+ * 拆不出多于一条时返回 `null` —— 此时它和原消息**语义完全相同**，交给调用方原样输出，
+ * 免得给单条数据也套一层多余的 `path`。
+ */
+const splitDataModelUpdate = (payload: Record<string, unknown>): string[] | null => {
+  const { contents } = payload;
+  if (!Array.isArray(contents)) {
+    return null;
+  }
+
+  const base = typeof payload.path === 'string' ? payload.path : '';
+  const lines: string[] = [];
+
+  flattenDataEntries(contents, base, (path, entry) => {
+    lines.push(
+      JSON.stringify({ dataModelUpdate: { surfaceId: payload.surfaceId, path, contents: [entry] } }),
+    );
+  });
+
+  return lines.length > 1 ? lines : null;
+};
+
 /**
  * 把一个**完整 JSON 值**里属于「批量消息」的部分摊平成多条独立消息。
  * 不是批量消息（或结构不符）时返回 `null`，交给调用方走「原样成一行」。
  *
- * 摊平规则：`{ <messageKey>: { ...其余字段, <splitField>: [item] } }`，顺序保持。
+ * 摊平规则：
+ * - `surfaceUpdate`：`{ surfaceUpdate: { ...字段, components: [item] } }` 逐个组件一条；
+ * - `dataModelUpdate`：在 `contents` 基础上**递归下钻 `valueMap`**，按叶子逐条（见上）。
  */
 const splitBatchMessage = (item: unknown): string[] | null => {
-  if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+  if (!isRecord(item)) {
     return null;
   }
 
-  const record = item as Record<string, unknown>;
-  const messageKey = Object.keys(record).find((key) => key in SPLIT_ARRAY_FIELDS);
+  const messageKey = Object.keys(item).find((key) => key in SPLIT_ARRAY_FIELDS);
   if (!messageKey) {
     return null;
   }
 
-  const splitField = SPLIT_ARRAY_FIELDS[messageKey] as string;
-  const payload = record[messageKey];
-  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
+  const payload = item[messageKey];
+  if (!isRecord(payload)) {
     return null;
   }
 
-  const items = (payload as Record<string, unknown>)[splitField];
+  if (messageKey === 'dataModelUpdate') {
+    return splitDataModelUpdate(payload);
+  }
+
+  const splitField = SPLIT_ARRAY_FIELDS[messageKey] as string;
+  const items = payload[splitField];
   if (!Array.isArray(items)) {
     return null;
   }
 
   return items.map((entry) =>
-    JSON.stringify({
-      [messageKey]: { ...(payload as Record<string, unknown>), [splitField]: [entry] },
-    }),
+    JSON.stringify({ [messageKey]: { ...payload, [splitField]: [entry] } }),
   );
 };
 
@@ -304,6 +391,7 @@ const splitBatchMessage = (item: unknown): string[] | null => {
  *
  * - 顶层是数组时，逐个元素当消息（模型一次性给一批的场景）；
  * - 批量消息（见 `SPLIT_ARRAY_FIELDS`）：**每个子项一条独立消息**（`surfaceId` 等其余字段原样带上）；
+ *   `dataModelUpdate` 还会递归下钻 `valueMap`，拆到叶子条目为止；
  * - 其余消息：重新序列化成单行（去掉模型可能带上的缩进换行）；
  * - 顶层不是合法 JSON：原样返回，让 parser 去报错——缓冲层不吞错误。
  */
@@ -400,6 +488,238 @@ const collectPartialItems = (text: string, arrayOpen: number, skip: number): Par
   return result;
 };
 
+/** 增量扫描到的「叶子条目」：它所属容器的路径 + 原始文本（此刻已闭合）。 */
+interface LeafEntry {
+  path: string;
+  text: string;
+}
+
+/**
+ * 从数组的 `[`（`arrayOpen`）开始，递归收集**已经闭合的叶子条目**（增量粒度用）。
+ *
+ * 与整值路径的 `flattenDataEntries` 一一对应：容器条目（带非空 `valueMap`）继续下钻、
+ * 路径接上它的 key；叶子条目一闭合就收集。碰到还没吐完的元素就收手，剩下的下一片再扫。
+ *
+ * 前提：每个 `DataEntry` 的**第一个字段是 `key`**，值字段紧随其后（协议与全部 mock 都如此）。
+ * 只有这样才不必等整个元素闭合就能定出它的 key，从而及时下钻 / 产出。
+ */
+const collectLeafEntries = (
+  text: string,
+  arrayOpen: number,
+  path: string,
+  out: LeafEntry[],
+): void => {
+  let index = arrayOpen + 1;
+
+  while (index < text.length) {
+    index = skipWhitespace(text, index);
+
+    if (text[index] === ']') {
+      return; // 数组已闭合
+    }
+    if (text[index] !== '{') {
+      return; // 结构异常（或空档），收手
+    }
+
+    const end = readDataEntry(text, index, path, out);
+    if (end < 0) {
+      return; // 元素还没吐完 → 下次再来
+    }
+
+    index = skipWhitespace(text, end);
+    if (text[index] === ',') {
+      index += 1;
+      continue;
+    }
+
+    return; // 既不是逗号也不是数组结束
+  }
+};
+
+/**
+ * 读一个 `DataEntry`（从 `{` 起），返回其后的下标；元素未闭合时返回 `-1`。
+ *
+ * - 带**非空** `valueMap`：递归进 `valueMap`（叶子收进 `out`），再跳过整个元素；
+ * - 空 `valueMap`：整条元素当一个叶子收下（保持「空集合」）；
+ * - 叶子值字段（`valueString` / `valueNumber` / `valueBoolean`）：整条闭合后收进 `out`。
+ */
+const readDataEntry = (
+  text: string,
+  start: number,
+  path: string,
+  out: LeafEntry[],
+): number => {
+  let index = skipWhitespace(text, start + 1);
+
+  const keyField = readString(text, index);
+  if (!keyField || keyField.value !== 'key') {
+    return -1;
+  }
+  index = skipWhitespace(text, keyField.end);
+  if (text[index] !== ':') {
+    return -1;
+  }
+  index = skipWhitespace(text, index + 1);
+
+  const entryKey = readString(text, index);
+  if (!entryKey) {
+    return -1;
+  }
+  index = skipWhitespace(text, entryKey.end);
+  if (text[index] !== ',') {
+    return -1; // 还需要值字段
+  }
+  index = skipWhitespace(text, index + 1);
+
+  const valueField = readString(text, index);
+  if (!valueField) {
+    return -1;
+  }
+  index = skipWhitespace(text, valueField.end);
+  if (text[index] !== ':') {
+    return -1;
+  }
+  index = skipWhitespace(text, index + 1);
+
+  if (valueField.value === 'valueMap') {
+    if (text[index] !== '[') {
+      return -1;
+    }
+
+    const before = out.length;
+    collectLeafEntries(text, index, joinPath(path, entryKey.value), out);
+
+    const mapEnd = skipValue(text, index);
+    if (mapEnd < 0) {
+      return -1; // valueMap 还没闭合 → 元素未完成（已收下的叶子仍然有效）
+    }
+
+    const cursor = skipWhitespace(text, mapEnd);
+    if (text[cursor] !== '}') {
+      return -1; // 元素还没闭合
+    }
+    if (out.length === before) {
+      out.push({ path, text: text.slice(start, cursor + 1) }); // 空 valueMap 原样收下
+    }
+    return cursor + 1;
+  }
+
+  const valueEnd = skipValue(text, index);
+  if (valueEnd < 0) {
+    return -1;
+  }
+
+  const cursor = skipWhitespace(text, valueEnd);
+  if (text[cursor] !== '}') {
+    return -1; // 叶子条目约定为「恰好 key + 一个值字段」
+  }
+
+  out.push({ path, text: text.slice(start, cursor + 1) });
+  return cursor + 1;
+};
+
+/** 把一个**叶子条目的原始文本**补全成一条完整的 dataModelUpdate 消息。 */
+const completeDataEntry = (surfaceId: string, path: string, entryText: string): string | null => {
+  let entry: unknown;
+  try {
+    entry = JSON.parse(entryText);
+  } catch {
+    // 已闭合才收集，理论上不该走到这里；宁可少吐一条，也不吐一条垃圾给 parser。
+    return null;
+  }
+
+  return JSON.stringify({ dataModelUpdate: { surfaceId, path, contents: [entry] } });
+};
+
+/**
+ * 对**尚未闭合**的 `dataModelUpdate` 做增量提取：把 `contents` 里已闭合的叶子条目逐条
+ * 补全成独立消息（路径带上祖先 key）。
+ *
+ * 需要 `surfaceId`（以及可选的 `path`）出现在 `contents` **之前**——A2UI 报文都是这个顺序。
+ * 顺序不符时返回空，退化为整值粒度（等整个值闭合再拆），不会产出错路径的消息。
+ *
+ * @param bodyOpen `dataModelUpdate` 载荷对象的 `{` 下标
+ * @param skip 已经吐过的叶子条数（同一个未闭合值跨多次 push 时用来去重）
+ */
+const extractPartialDataEntries = (
+  text: string,
+  bodyOpen: number,
+  skip: number,
+): PartialItems => {
+  const empty: PartialItems = { total: 0, messages: [] };
+
+  let index = bodyOpen + 1;
+  let surfaceId: string | undefined;
+  let basePath = '';
+  let contentsOpen = -1;
+
+  while (index < text.length) {
+    index = skipWhitespace(text, index);
+    if (text[index] === '}') {
+      break; // 载荷已闭合：没找到 contents
+    }
+
+    const key = readString(text, index);
+    if (!key) {
+      return empty;
+    }
+    index = skipWhitespace(text, key.end);
+    if (text[index] !== ':') {
+      return empty;
+    }
+    index = skipWhitespace(text, index + 1);
+
+    if (key.value === 'contents') {
+      if (text[index] !== '[') {
+        return empty; // 结构不符
+      }
+      contentsOpen = index;
+      break;
+    }
+
+    if (key.value === 'surfaceId' || key.value === 'path') {
+      const value = readString(text, index);
+      if (!value) {
+        return empty; // 字段还没吐完 → 下次再来
+      }
+      if (key.value === 'surfaceId') {
+        surfaceId = value.value;
+      } else {
+        basePath = value.value;
+      }
+      index = skipWhitespace(text, value.end);
+    } else {
+      const end = skipValue(text, index);
+      if (end < 0) {
+        return empty;
+      }
+      index = skipWhitespace(text, end);
+    }
+
+    if (text[index] === ',') {
+      index += 1;
+    }
+  }
+
+  // contents 之前必须已经拿到 surfaceId，否则补出来的消息会缺字段。
+  if (contentsOpen < 0 || surfaceId === undefined) {
+    return empty;
+  }
+
+  const leaves: LeafEntry[] = [];
+  collectLeafEntries(text, contentsOpen, basePath, leaves);
+
+  const result: PartialItems = { total: leaves.length, messages: [] };
+  for (const leaf of leaves.slice(skip)) {
+    const line = completeDataEntry(surfaceId, leaf.path, leaf.text);
+    if (line !== null) {
+      result.messages.push(line);
+    }
+  }
+
+  return result;
+};
+
 /**
  * 在**尚未闭合**的文本里，把「已经完整、能独立成消息」的批量子项抽出来并补全。
  *
@@ -410,6 +730,8 @@ const collectPartialItems = (text: string, arrayOpen: number, skip: number): Par
  * - 顶层不是对象（如数组形态）、消息类型不可拆分、前面的字段还没吐完 → 返回空，交给整值粒度；
  * - 拆分数组必须是信封里**第一个键之后**的：数组排在最前时它后面可能还跟着必填字段
  *   （如 `surfaceId`），补出来的消息会缺字段，所以也交给整值粒度。A2UI 实际报文都满足这条。
+ * - `dataModelUpdate` 走 `extractPartialDataEntries`：`contents` 只是拆分起点，还要递归
+ *   下钻嵌套的 `valueMap`（同样要求 `surfaceId` / `path` 出现在 `contents` 之前）。
  *
  * @param skip 已经吐过的子项条数（同一个未闭合值跨多次 push 时用来去重）
  */
@@ -438,6 +760,11 @@ export const extractPartialItems = (text: string, skip = 0): PartialItems => {
   index = skipWhitespace(text, index + 1);
   if (text[index] !== '{') {
     return empty; // 消息体必须是对象
+  }
+
+  // dataModelUpdate 的分拆要递归下钻 valueMap，交给专门的扫描器（index 此刻指向消息体 `{`）。
+  if (topKey.value === 'dataModelUpdate') {
+    return extractPartialDataEntries(text, index, skip);
   }
 
   // 在消息体里逐个键找「要拆分的数组」
@@ -511,7 +838,8 @@ export interface A2UIBuffer {
  * `push` 内部三件事：
  * ① 用 `scanJSONValues` 结算**已经闭合**的完整值（走 `normalizeToJSONL` 拆包，跳过已增量吐过的子项）；
  * ② 对**仍未闭合**的当前值做 `extractPartialItems`，把已完整的子项立刻补全发出去；
- * ③ 只要这一片真的产出了消息，就 `refreshDerivedState()`（hydrate + buildTree + 回调树渲染器）。
+ * ③ 只要这一片真的产出了消息，就 `requestDerivedStateRefresh()`（水合 + 建树 + 回调树渲染器，
+ *    合帧去重）。
  */
 export const createA2UIBuffer = (): A2UIBuffer => {
   let buffer = '';
@@ -569,7 +897,7 @@ export const createA2UIBuffer = (): A2UIBuffer => {
     }
 
     if (sent > 0) {
-      refreshDerivedState();
+      requestDerivedStateRefresh();
     }
 
     return sent;
