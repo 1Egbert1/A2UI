@@ -14,3 +14,4 @@ export * from './column-row-mix';
 export * from './data-binding';
 export * from './list-template';
 export * from './shopping-cart';
+export * from './local-action';

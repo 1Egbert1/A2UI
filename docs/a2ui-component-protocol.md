@@ -15,6 +15,7 @@
 - 顶层 `styles`（`font` / `primaryColor`）主题：**未接入**，当前用内联样式
 - 数据绑定写回（`updateModel`）：取值对象带 `path` 的组件属性支持
 - `children.template` 动态列表渲染：Row / Column / List 三者均支持
+- 客户端动作：`Button.action` 已支持「上报服务端」与**本地动作**两条路（后者是协议扩展，见 [`a2ui-local-action-extension.md`](./a2ui-local-action-extension.md)）
 
 ---
 
@@ -207,14 +208,23 @@ Row 主轴水平（`flex-direction: row`），Column 主轴垂直（`flex-direct
 | `primary` | boolean | — | — | `true`→主按钮样式（蓝底白字），否则默认样式 |
 | `action` | object | ✅ | — | 点击时派发的动作（见下） |
 
-`action` 结构（标准目录）：
+`action` 结构（标准目录 + 本项目的扩展字段）：
 
 | 字段 | 类型 | 必需 | 说明 |
 | --- | --- | --- | --- |
 | `name` | string | ✅ | 动作名 |
 | `context` | array | — | `{ key, value }` 列表，`value` 为取值对象（`path` / `literalString` / `literalNumber` / `literalBoolean`） |
+| `type` | `"server"` \| `"local"` | — | ★ 扩展字段。缺省 `"server"`；显式 `"local"` 才走本地分支 |
+| `local` | `LocalOperation[]` | — | ★ 扩展字段。`type: "local"` 时要执行的本地操作（`{ type: "updateDataModel", path, value }`） |
 
-> ⚠️ 差异：`action` 通过 DOM 自定义事件 `a2ui-action`（`bubbles: true`）抛给宿主，`event.detail` 为原样的 `{ name, context }`。core 尚无 client→server 回传通道，故**未解析 `context` 里 `value.path` 的实际值**，也**未走协议层的 `userAction` 消息**。宿主需自行监听该事件接入回传。
+点击时的两条路：
+
+| 分支 | 行为 |
+| --- | --- |
+| 服务端（缺省） | 解析 `context`（数组 → 对象，`path` 求值）→ 组装符合 `client_to_server.json` 的 `userAction` 消息 → 经 DOM 自定义事件 `a2ui-action`（`bubbles: true`）交给宿主，**传输由宿主决定** |
+| 本地（`type: "local"`） | 把 `local[]` 里每个操作**模拟成一次 `context.updateModel(path, value)`** 写回数据模型 → 触发重渲染；**不外发事件、不经过服务端** |
+
+> ⚠️ 扩展：`a2ui-action` 的 `event.detail` 现在是完整的协议消息 `{ userAction: { name, surfaceId, sourceComponentId, timestamp, context } }`（此前是原样的 `{ name, context }`，`path` 未解析）。本地动作不外发。协议扩展的完整说明见 [`a2ui-local-action-extension.md`](./a2ui-local-action-extension.md)。
 
 #### CheckBox
 
@@ -277,11 +287,12 @@ Row 主轴水平（`flex-direction: row`），Column 主轴垂直（`flex-direct
 | --- | --- | --- | --- |
 | 1 | 顶层 `styles`（`font` / `primaryColor`）主题 | 未接入，全内联样式 | 无法按 surface 换肤 |
 | 2 | `Icon` 图形资源 | emoji 字符占位 | 观感非正式图标，需接图标集 |
-| 3 | `Button.action` 回传 | DOM 自定义事件 `a2ui-action` 出口 | 未走协议 `userAction`，`context` 的 `path` 未解析 |
+| 3 | `Button.action` 回传 | **已实现**：服务端分支组装协议 `userAction`（`context` 数组→对象、`path` 已求值），经 `a2ui-action` 事件交宿主；本地分支（`type: "local"`）走 `updateModel` 写回，不外发 | 传输方式仍由宿主决定，core 不碰网络 |
 | 4 | `Text` 缺省 `usageHint` | 渲染为 `<span>`（非 `<body>` 的 `<p>`） | 视觉上等价，语义标签不同 |
 
 ## 五、可运行示例
 
 - `packages/a2ui-core/mock/data-binding.ts` —— 最小完整数据绑定示例（TextField / CheckBox / Slider 写回 + Text 同 path 联动）
 - `packages/a2ui-core/mock/list-template.ts` —— List `children.template` 动态渲染示例
-- 端到端测试：`packages/a2ui-core/test/data-binding.spec.ts`、`template.spec.ts`；`packages/a2ui-vue/test/*`
+- `packages/a2ui-core/mock/local-action.ts` —— 本地动作最小示例（按钮点击写回 `/message`，Text 随之更新）
+- 端到端测试：`packages/a2ui-core/test/data-binding.spec.ts`、`template.spec.ts`、`action.spec.ts`；`packages/a2ui-vue/test/*`

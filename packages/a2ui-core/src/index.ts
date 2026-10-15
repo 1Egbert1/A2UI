@@ -6,5 +6,6 @@ export * from './vnode';
 export * from './treebuilder';
 export * from './hydrate';
 export * from './binding';
+export * from './action';
 export * from './error';
 export * from './store';

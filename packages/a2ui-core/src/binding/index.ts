@@ -175,6 +175,34 @@ export const readBoolean = (
   return fallback;
 };
 
+/**
+ * 通用取值对象解析：把取值对象还原成**原始值**，不做类型转换也不给兜底。
+ *
+ * 上面几个 `readXxx` 回答的是「我要一个字符串 / 数字 / 布尔 / 字符串数组」，各自带类型转换
+ * 与缺省值；这个回答的是「我不管你是什么类型，按协议取出来就行」。用在两处：
+ * 客户端动作的 `action.context`（回传给服务端时要还原每个 `value` 的真实值），
+ * 以及本地动作里 `updateDataModel` 操作的 `value`。
+ *
+ * 判定顺序与协议字段顺序一致（`additionalProperties: false` 下四者互斥，取先命中的）：
+ * `literalString` → `literalNumber` → `literalBoolean` → `literalArray` → `path`。
+ *
+ * 宽松处理：裸值（非对象）原样返回；对象里一个字段都没命中时返回 `undefined`。
+ */
+export const readBoundValue = (value: unknown, read: (path: string) => unknown): unknown => {
+  const record = asRecord(value);
+  if (!record) {
+    return value;
+  }
+
+  if (record.literalString !== undefined) return record.literalString;
+  if (record.literalNumber !== undefined) return record.literalNumber;
+  if (record.literalBoolean !== undefined) return record.literalBoolean;
+  if (record.literalArray !== undefined) return record.literalArray;
+  if (typeof record.path === 'string') return read(record.path);
+
+  return undefined;
+};
+
 /** 取字符串数组；非字符串元素会被转成字符串。 */
 export const readStringArray = (
   value: unknown,

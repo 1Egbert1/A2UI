@@ -5,7 +5,9 @@ import {
   readString,
   readStringArray,
   recordError,
+  resolveAction,
   type ComponentRenderer,
+  type RenderContext,
 } from 'a2ui-core';
 
 import { childOf, type VueNode } from '../internal/node';
@@ -77,19 +79,40 @@ const BUTTON_PRIMARY = { background: '#409eff', color: '#ffffff' } as const;
 const BUTTON_DEFAULT = { background: '#ffffff', color: '#1f2937', borderColor: '#d1d5db' } as const;
 
 /**
- * 把 `Button.action` 抛给宿主。
+ * 处理 Button 点击：解析动作，按 `type` 分成两支走。
  *
- * core 还没有 client→server 的回传通道，本包也不该自己造事件总线，所以用 DOM 自定义事件
- * 作为出口：宿主只要在任意祖先节点上监听 `a2ui-action`，就能从 `event.detail` 拿到
- * 协议里原样的 `{ name, context }`。
+ * - **`type: "local"`（协议扩展）**：把 `action.local` 里的操作**模拟成一次数据绑定写回** ——
+ *   对每个 `updateDataModel` 操作调一次 `context.updateModel(path, value)`，与表单控件输入时
+ *   走的是同一条链路（写 store → 触发全量重渲染），因此绑定了同一 path 的组件会立刻跟着变。
+ *   这一支**不经过宿主、也不发给服务端**，这正是「本地动作」的意义。
+ * - **其余（服务端分支）**：解析 `context` 后按 `client_to_server.json` 组装完整 `userAction`
+ *   消息，通过 DOM 自定义事件 `a2ui-action`（`bubbles: true`）抛给宿主，由宿主自行发给服务端。
+ *   core 不碰网络，宿主可以换成 fetch / SSE / WebSocket 任意传输。
+ *
+ * 两类动作都不做时（`action` 缺 `name`、不是对象）静默忽略，不抛错。
  */
-const dispatchAction = (event: MouseEvent, action: unknown): void => {
-  if (!action || typeof action !== 'object') {
+const handleButtonClick = (event: MouseEvent, action: unknown, context: RenderContext): void => {
+  const resolved = resolveAction(action, {
+    surfaceId: context.surfaceId,
+    componentId: context.componentId,
+    read: context.read,
+  });
+
+  if (!resolved) {
+    return;
+  }
+
+  if (resolved.kind === 'local') {
+    for (const operation of resolved.operations) {
+      context.updateModel(operation.path, operation.value);
+    }
     return;
   }
 
   const target = event.currentTarget as HTMLElement | null;
-  target?.dispatchEvent(new CustomEvent('a2ui-action', { detail: action, bubbles: true }));
+  target?.dispatchEvent(
+    new CustomEvent('a2ui-action', { detail: resolved.message, bubbles: true }),
+  );
 };
 
 /** Button：child 指向按钮文案组件，primary 决定是否主按钮。 */
@@ -99,7 +122,7 @@ export const renderButton: ComponentRenderer<VueNode> = (props, context) =>
     {
       type: 'button',
       style: { ...BUTTON_BASE, ...(props.primary === true ? BUTTON_PRIMARY : BUTTON_DEFAULT) },
-      onClick: (event: MouseEvent) => dispatchAction(event, props.action),
+      onClick: (event: MouseEvent) => handleButtonClick(event, props.action, context),
     },
     [childOf(context.resolve, String(props.child ?? ''))],
   );

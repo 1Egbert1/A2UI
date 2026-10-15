@@ -346,12 +346,15 @@ describe('A2UI Vue 组件渲染器', () => {
       assert.match(html, /background:#409eff/);
     });
 
-    it('should dispatch the protocol action as a bubbling custom event', () => {
+    it('should dispatch a protocol-shaped userAction for a server action', () => {
       const action = { name: 'addToCart', context: [{ key: 'sku', value: { literalString: 'A-1' } }] };
-      const vnode = renderButton({ child: 'label', action }, fakeContext({ nodes: CHILDREN })) as VNode;
+      const vnode = renderButton(
+        { child: 'label', action },
+        fakeContext({ nodes: CHILDREN, surfaceId: 'cart', componentId: 'buy' }),
+      ) as VNode;
 
-      const received: unknown[] = [];
-      const fakeTarget = { dispatchEvent: (event: unknown) => received.push(event) };
+      const received: CustomEvent[] = [];
+      const fakeTarget = { dispatchEvent: (event: unknown) => received.push(event as CustomEvent) };
 
       (vnode.props as { onClick: (event: unknown) => void }).onClick({ currentTarget: fakeTarget });
 
@@ -359,7 +362,77 @@ describe('A2UI Vue 组件渲染器', () => {
       const event = received[0] as CustomEvent;
       assert.equal(event.type, 'a2ui-action');
       assert.equal(event.bubbles, true);
-      assert.deepEqual(event.detail, action);
+      assert.equal(event.detail.userAction.name, 'addToCart');
+      assert.equal(event.detail.userAction.surfaceId, 'cart');
+      assert.equal(event.detail.userAction.sourceComponentId, 'buy');
+      assert.deepEqual(
+        event.detail.userAction.context,
+        { sku: 'A-1' },
+        'context 里的取值对象应已解析成真实值',
+      );
+      assert.match(
+        event.detail.userAction.timestamp,
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
+        'timestamp 应是 ISO 8601',
+      );
+    });
+
+    it('should apply a local action through updateModel without notifying the host', () => {
+      const writes: Array<[string, unknown]> = [];
+      const vnode = renderButton(
+        {
+          child: 'label',
+          action: {
+            name: 'refresh',
+            type: 'local',
+            local: [{ type: 'updateDataModel', path: '/message', value: { literalString: '新文案' } }],
+          },
+        },
+        fakeContext({ nodes: CHILDREN, updateModel: (path, value) => writes.push([path, value]) }),
+      ) as VNode;
+
+      const received: unknown[] = [];
+      const fakeTarget = { dispatchEvent: (event: unknown) => received.push(event) };
+
+      (vnode.props as { onClick: (event: unknown) => void }).onClick({ currentTarget: fakeTarget });
+
+      assert.deepEqual(writes, [['/message', '新文案']], '本地操作应被模拟成一次 updateModel 写回');
+      assert.deepEqual(received, [], '本地动作不应外发给宿主');
+    });
+
+    it('should resolve local action values from the data model and keep the operation order', () => {
+      const writes: Array<[string, unknown]> = [];
+      const vnode = renderButton(
+        {
+          child: 'label',
+          action: {
+            name: 'copy',
+            type: 'local',
+            local: [
+              { type: 'updateDataModel', path: '/draft', value: { path: '/saved' } },
+              { type: 'updateDataModel', path: '/count', value: { literalNumber: 7 } },
+            ],
+          },
+        },
+        fakeContext({
+          nodes: CHILDREN,
+          data: { saved: '已保存的内容' },
+          updateModel: (path, value) => writes.push([path, value]),
+        }),
+      ) as VNode;
+
+      (vnode.props as { onClick: (event: unknown) => void }).onClick({
+        currentTarget: { dispatchEvent: () => {} },
+      });
+
+      assert.deepEqual(
+        writes,
+        [
+          ['/draft', '已保存的内容'],
+          ['/count', 7],
+        ],
+        '多个本地操作应按声明顺序依次写回',
+      );
     });
 
     it('should not dispatch when the action is missing', () => {
