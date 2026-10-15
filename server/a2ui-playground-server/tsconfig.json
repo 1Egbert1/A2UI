@@ -7,7 +7,18 @@
     "outDir": "./dist",
     "rootDir": "./src",
     "esModuleInterop": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "baseUrl": ".",
+    // 服务端只从 a2ui-core 取**类型**（import type，编译期擦除），运行时不依赖它。
+    // 直接指到 core 的声明产物，理由有两条：
+    //   1. 绕开 node_modules 里的 workspace 软链 —— 本机（Windows）创建软链会被拦，
+    //      node_modules/a2ui-core 是个空目录，走默认解析会找不到（web 侧同样靠 alias 绕开）；
+    //   2. 类型永远来自**构建产物**，与客户端实际运行的解析器对齐，不会被源码与 dist 的
+    //      先后顺序搅乱。
+    // 前置条件：先 `pnpm -r build`（`-r` 会按依赖顺序先构建 core）。
+    "paths": {
+      "a2ui-core": ["../../packages/a2ui-core/dist/index.d.ts"]
+    }
   },
   "include": ["src/**/*"],
   "ts-node": {

@@ -2,15 +2,17 @@
   "name": "a2ui-playground-server",
   "version": "0.0.1",
   "private": true,
-  "description": "Backend server for A2UI Playground",
+  "description": "Backend server for A2UI Playground：接收用户输入 → 调 agent → 以 SSE(AG-UI) 流式产出 A2UI 协议",
   "main": "./dist/index.js",
   "scripts": {
     "dev": "ts-node src/index.ts",
     "start": "ts-node src/index.ts",
     "build": "tsc",
-    "test": "echo \"No tests yet\" && exit 0"
+    "test": "mocha",
+    "test:types": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
+    "a2ui-core": "workspace:*",
     "koa": "^2.15.3",
     "koa-bodyparser": "^4.4.1",
     "koa-router": "^13.0.1",
@@ -20,8 +22,11 @@
     "@types/koa": "^2.15.0",
     "@types/koa-bodyparser": "^4.3.12",
     "@types/koa-router": "^7.4.8",
+    "@types/mocha": "^10.0.9",
     "@types/node": "^22.7.5",
+    "mocha": "^10.7.3",
     "ts-node": "^10.9.2",
+    "tsx": "^4.19.1",
     "typescript": "^5.6.3"
   }
 }
