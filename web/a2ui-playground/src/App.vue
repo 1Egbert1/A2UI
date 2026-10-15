@@ -60,6 +60,63 @@
       </div>
     </section>
 
+    <section class="panel server-panel">
+      <div class="panel-header">
+        <h2>a2ui-server</h2>
+        <span class="tag">POST /api/a2ui/run?stream=false</span>
+      </div>
+
+      <p class="server-desc">
+        把输入发给本地 a2ui-server（默认 <code>http://localhost:3000</code>）。两种传输都在<strong>同一个入口</strong>上：
+        <strong>非 SSE</strong> 加 <code>?stream=false</code>，一次拿回全部协议消息、拼成 JSONL 后解析；
+        <strong>SSE 流式</strong>不加 query，收到一条 <code>CUSTOM a2ui.message</code> 就喂一条
+        —— 与 Stream 面板的「逐条推送」是同一套机制，所以组件是一个个长出来的，不是攒完再闪现。
+        <span class="server-desc__note">
+          同一个会话（threadId）连点两次即多轮，第二次返回的是<strong>增量</strong>消息（只含改动的组件）。
+        </span>
+      </p>
+
+      <div class="server-controls">
+        <el-input
+          v-model="serverPrompt"
+          class="server-input"
+          placeholder="例如：做一个购物车"
+          @keyup.enter="requestFromServer"
+        />
+        <el-button
+          type="primary"
+          :loading="serverLoading"
+          :disabled="sseActive"
+          @click="requestFromServer"
+        >
+          生成（非 SSE）
+        </el-button>
+        <el-button
+          :type="sseActive ? 'danger' : 'primary'"
+          plain
+          :disabled="serverLoading"
+          @click="requestFromServerStream"
+        >
+          {{ sseActive ? '停止流式' : '生成（SSE 流式）' }}
+        </el-button>
+        <el-button plain :disabled="sseActive || serverLoading" @click="startNewServerSession">
+          新会话
+        </el-button>
+        <el-button plain :disabled="sseActive || serverLoading" @click="backToMock">回到 mock</el-button>
+      </div>
+
+      <p v-if="serverError" class="server-error">请求失败：{{ serverError }}</p>
+
+      <div v-if="serverResult || sseActive" class="server-meta">
+        <span>thread <code>{{ serverThreadId }}</code></span>
+        <span>surface <code>{{ serverResult?.surfaceId || '等待 a2ui.surface…' }}</code></span>
+        <span>provider <code>{{ serverResult?.provider || '—' }}</code></span>
+        <span>消息 <strong>{{ serverResult?.messages.length ?? 0 }}</strong> 条</span>
+        <span v-if="sseActive">文本分片 <strong>{{ sseDeltaCount }}</strong> · 接收中…</span>
+        <span v-else>耗时 <strong>{{ serverElapsed }}</strong> ms</span>
+      </div>
+    </section>
+
     <section class="panel stream-panel">
       <div class="panel-header">
         <h2>Stream 模拟</h2>
@@ -267,6 +324,7 @@ import {
   dataBindingMessages,
   deriveStreamOrders,
   listTemplateMessages,
+  localActionMessages,
   productCardMessages,
   shoppingCartMessages,
   simpleTextMessages,
@@ -330,6 +388,12 @@ const MOCKS = [
     surfaceId: 'shopping-cart',
     messages: shoppingCartMessages,
   },
+  {
+    label: 'local-action',
+    desc: '本地动作：按钮点击写回数据模型（不经过服务端）',
+    surfaceId: 'local-action',
+    messages: localActionMessages,
+  },
 ] as const;
 
 const dialogVisible = ref(false);
@@ -342,6 +406,49 @@ const storeState = ref<A2UIStoreState | null>(null);
 /** 交给 vue 的 render() 作为挂载容器的元素。 */
 const previewRef = ref<HTMLElement | null>(null);
 let unsubscribe: (() => void) | undefined;
+
+/** 服务端 `?stream=false` 的响应体（只声明本面板用到的字段）。 */
+interface ServerRunResult {
+  sessionId: string;
+  surfaceId: string;
+  messages: unknown[];
+  provider: string;
+  warnings: string[];
+}
+
+/** AG-UI 事件（只声明本面板会分支处理的几种，其余原样忽略）。 */
+type AgUiSseEvent =
+  | { type: 'RUN_STARTED'; threadId: string; runId: string }
+  | { type: 'TEXT_MESSAGE_CONTENT'; messageId: string; delta: string }
+  | { type: 'RUN_FINISHED'; threadId: string; runId: string }
+  | { type: 'RUN_ERROR'; message: string; code: string }
+  | { type: 'CUSTOM'; name: string; value: Record<string, unknown> };
+
+/** 生成一个新的 threadId：同一个 threadId 的后续请求，在服务端算「同一会话的下一轮」。 */
+function newServerThreadId(): string {
+  return `pg-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/** 预览的数据来源：mock 下拉 vs 服务端生成。两者写同一份 store，但 surfaceId 归属不同。 */
+const dataSource = ref<'mock' | 'server'>('mock');
+
+/** 服务端地址：可用 `VITE_A2UI_SERVER` 覆盖，缺省打本机 3000。 */
+const SERVER_BASE = String(import.meta.env.VITE_A2UI_SERVER || 'http://localhost:3000');
+
+const serverPrompt = ref('做一个购物车');
+const serverLoading = ref(false);
+const serverError = ref('');
+const serverElapsed = ref(0);
+const serverResult = ref<ServerRunResult | null>(null);
+/** 同一个 threadId 连续请求 = 多轮对话，服务端只回增量；「新会话」会换一个。 */
+const serverThreadId = ref(newServerThreadId());
+
+/** SSE 读取进行中。读取期间按钮兼作「停止」。 */
+const sseActive = ref(false);
+/** 已收到的 TEXT_MESSAGE_CONTENT 分片数（模型吐字的「块」），只用于展示。 */
+const sseDeltaCount = ref(0);
+/** 唯一的在途读取句柄：abort 会让服务端把这轮连接销毁掉（它监听了 req close）。 */
+let sseController: AbortController | undefined;
 
 /** 字符流模式的分片参数：每 50ms 吐 50 个字符，模拟模型按 token 逐字输出。 */
 const CHAR_CHUNK = 50;
@@ -443,7 +550,16 @@ const pushedUnits = computed(() =>
  * 也是同一个 surfaceId，所以预览始终看 `activeMock.surfaceId`。下拉或模式一旦切换都会调用
  * `resetStream()` 把游标归零、清空 store，再重新解析当前 mock。
  */
-const activeSurfaceId = computed(() => activeMock.value.surfaceId);
+/**
+ * 当前预览的 surface。
+ *
+ * mock 与「服务端生成」写的是同一份 store，但 surfaceId 来源不同：服务端的 surfaceId 由服务端
+ * 自己生成（`surface-xxxx`），必须跟着结果走 —— 否则预览区会去 treeMap 里找一个不存在的 key，
+ * 渲染出来是空的。
+ */
+const activeSurfaceId = computed(() =>
+  dataSource.value === 'server' ? (serverResult.value?.surfaceId ?? '') : activeMock.value.surfaceId,
+);
 
 /** 把 VNode 压成一行摘要，避免 JSON.stringify 撞上 VNode 的循环引用。 */
 const describeVNode = (vnode: VNode): string => {
@@ -515,6 +631,7 @@ const bindingHintTitle = computed(() => {
   if (activeSurfaceId.value === 'data-binding') return '数据绑定验证（写回）';
   if (activeSurfaceId.value === 'list-template') return '数据模型绑定（List 动态渲染）';
   if (activeSurfaceId.value === 'shopping-cart') return '购物车列表（List 模板 + 合计绑定）';
+  if (activeSurfaceId.value === 'local-action') return '本地动作（点击写回数据模型）';
   return '数据模型绑定';
 });
 
@@ -535,6 +652,13 @@ const bindingHintDesc = computed(() => {
       'List 的 children.template 绑定 /cart/items，按 valueMap 的 3 个条目各渲染一张卡片；' +
       '卡片内 Image / Text 的相对路径 /cart/items/item/image、name、desc、price、qty 解析到各条目；' +
       '底部「合计」Text 绑定 /cart/total，与列表同源于一份数据模型。'
+    );
+  }
+  if (activeSurfaceId.value === 'local-action') {
+    return (
+      '点「更新文案」按钮：action.type = "local" 表示本地动作，a2ui-vue 会把 action.local 里的' +
+      ' updateDataModel 操作当成一次 updateModel 写回 —— 绑 /message 的 Text 随即更新。' +
+      '整条链路不经过服务端，下面 JSON 里的 /message 会实时变成新文案。'
     );
   }
   return '下面 JSON 是当前 surface 的数据模型（dataModelMap 的实时内容），组件通过 path 绑定到它的字段。';
@@ -855,11 +979,212 @@ const toggleAuto = () => {
  * 解析完再收到新树（预览重画）。渲染时机全部由 SDK 给。
  */
 const loadMock = () => {
+  // 切回 mock 数据源：否则预览区还按服务端的 surfaceId 去 treeMap 里找树。
+  dataSource.value = 'mock';
   resetStream();
   storeState.value = parseA2UI(activeMock.value.messages.join('\n'));
 };
 
 watch(mockIndex, loadMock);
+
+/**
+ * 调服务端的**非 SSE** 接口，把返回的协议消息灌进同一份 store。
+ *
+ * 之所以整条解析/渲染链路都能复用：接口返回的 `messages` 就是「按序的 A2UI 协议消息」，
+ * 与本地 mock 形态一致（mock 是字符串数组，这里是对象数组，字符串化后拼成 JSONL 即可）。
+ * 于是渲染、数据模型、错误收集、组件树面板一行都不用改。
+ */
+const requestFromServer = async () => {
+  serverLoading.value = true;
+  serverError.value = '';
+  const startedAt = Date.now();
+
+  try {
+    const response = await fetch(`${SERVER_BASE}/api/a2ui/run?stream=false`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ threadId: serverThreadId.value, message: serverPrompt.value }),
+    });
+
+    const body = (await response.json()) as ServerRunResult & { error?: string };
+    if (!response.ok) {
+      // 服务端的两类失败：400（入参非法）与 502（模型没产出任何协议消息）。
+      throw new Error(body.error ?? `HTTP ${response.status}`);
+    }
+
+    serverElapsed.value = Date.now() - startedAt;
+    // 顺序有讲究：先清场，再切数据源与 surfaceId，最后装载 —— 装载会触发 SDK 回调渲染，
+    // 那一刻 activeSurfaceId 必须已经指向服务端的 surface。
+    resetStream();
+    serverResult.value = body;
+    dataSource.value = 'server';
+    storeState.value = parseA2UI(body.messages.map((message) => JSON.stringify(message)).join('\n'));
+  } catch (error) {
+    serverResult.value = null;
+    serverError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    serverLoading.value = false;
+  }
+};
+
+/** 换一个 threadId：下一次请求在服务端算「新会话」，会回完整骨架而不是增量。 */
+const startNewServerSession = () => {
+  serverThreadId.value = newServerThreadId();
+  serverResult.value = null;
+  serverError.value = '';
+};
+
+/** 从服务端结果切回 mock（选同一个 mock 不会触发 watch，所以需要这个显式出口）。 */
+const backToMock = () => {
+  serverResult.value = null;
+  serverError.value = '';
+  loadMock();
+};
+
+/** SSE 帧 → 事件对象。只认 `data:` 行（`event:` 名与注释行按规范忽略）。 */
+const parseSseFrame = (frame: string): AgUiSseEvent | null => {
+  const dataLine = frame.split('\n').find((line) => line.startsWith('data:'));
+  if (dataLine === undefined) {
+    return null;
+  }
+  try {
+    return JSON.parse(dataLine.slice('data:'.length).trim()) as AgUiSseEvent;
+  } catch {
+    // 分帧按 `\n\n` 切，正常不会出现半截 JSON；真遇到就跳过这一帧，不打断整条流。
+    return null;
+  }
+};
+
+/**
+ * 一条 AG-UI 事件 → 宿主侧的动作。
+ *
+ * 关键约定：`CUSTOM a2ui.surface` **一定先于**任何 `a2ui.message` 到达（服务端保证），
+ * 所以 surfaceId 就位之后才开始渲染，预览区不会出现「拿旧 surfaceId 找树」的空窗。
+ */
+const handleAgUiEvent = (event: AgUiSseEvent): void => {
+  if (event.type === 'TEXT_MESSAGE_CONTENT') {
+    sseDeltaCount.value += 1;
+    return;
+  }
+
+  if (event.type === 'RUN_ERROR') {
+    serverError.value = `服务端 RUN_ERROR（${event.code}）：${event.message}`;
+    return;
+  }
+
+  if (event.type !== 'CUSTOM') {
+    return;
+  }
+
+  if (event.name === 'a2ui.surface') {
+    serverResult.value = {
+      sessionId: serverThreadId.value,
+      surfaceId: String(event.value.surfaceId ?? ''),
+      provider: String(event.value.provider ?? ''),
+      messages: [],
+      warnings: [],
+    };
+    dataSource.value = 'server';
+    return;
+  }
+
+  if (event.name === 'a2ui.message') {
+    // 记账与渲染走同一条：先入列（状态条实时涨），再 push 进 JSONL 流 ——
+    // push 内部 ingest + 刷新派生状态（含 SDK 的 renderTree 回调），所以预览随即长出来。
+    serverResult.value?.messages.push(event.value);
+    stream.push(`${JSON.stringify(event.value)}\n`);
+  }
+};
+
+/**
+ * 调服务端的 **SSE** 接口，边收边渲染。
+ *
+ * 为什么不用 `EventSource`：它只能发 GET，而入参在请求体里 —— 只能 `fetch` +
+ * `response.body.getReader()` 手动切帧（`\n\n` 分帧、剥 `data:` 前缀）。
+ *
+ * 每条 `CUSTOM a2ui.message` 立刻 `stream.push()` 进与 Stream 面板同一个 JSONL 流，
+ * 于是流式渲染、入场动画、数据模型绑定全部自动复用，没有第二套渲染路径。
+ */
+const requestFromServerStream = async () => {
+  if (sseActive.value) {
+    // 按钮兼作「停止」：中断本地读取即可，服务端监听了连接关闭，会把这轮流销毁掉。
+    sseController?.abort();
+    return;
+  }
+
+  serverError.value = '';
+  sseActive.value = true;
+  sseDeltaCount.value = 0;
+
+  const controller = new AbortController();
+  sseController = controller;
+  const startedAt = Date.now();
+
+  try {
+    const response = await fetch(`${SERVER_BASE}/api/a2ui/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body: JSON.stringify({ threadId: serverThreadId.value, message: serverPrompt.value }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      let message = `HTTP ${response.status}`;
+      try {
+        message = (JSON.parse(text) as { error?: string }).error ?? message;
+      } catch {
+        // 不是 JSON 就用状态码兜底。
+      }
+      throw new Error(message);
+    }
+
+    const body = response.body;
+    if (body === null) {
+      throw new Error('响应没有可读的流');
+    }
+
+    // 只有真正开流了才清场：入参非法时服务端在开流**之前**就回了 400，
+    // 那种情况下不该把已经渲染好的预览抹掉。
+    resetStream();
+    dataSource.value = 'server';
+    serverResult.value = null;
+
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let pending = '';
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      pending += decoder.decode(value, { stream: true });
+
+      let boundary = pending.indexOf('\n\n');
+      while (boundary !== -1) {
+        const frame = pending.slice(0, boundary);
+        pending = pending.slice(boundary + 2);
+        const event = parseSseFrame(frame);
+        if (event !== null) {
+          handleAgUiEvent(event);
+        }
+        boundary = pending.indexOf('\n\n');
+      }
+    }
+
+    serverElapsed.value = Date.now() - startedAt;
+  } catch (error) {
+    if (controller.signal.aborted) {
+      // 用户主动停：不是错误，已经渲染出来的部分保留。
+      return;
+    }
+    serverError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    sseActive.value = false;
+    sseController = undefined;
+  }
+};
 
 /** 换消息顺序 / 推送模式都等于换数据源与游标语义：清空重来，否则会与新数据错位。 */
 watch(streamOrderIndex, resetStream);
@@ -876,6 +1201,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   stopAuto();
+  // 在途的 SSE 读取要主动中断：否则组件已卸载它还在读，回调会去碰已卸载的响应式状态。
+  sseController?.abort();
   unsubscribe?.();
   // render() 产生的 DOM 不归本组件管，卸载时要手动清掉。
   if (previewRef.value) {
@@ -1090,6 +1417,63 @@ onBeforeUnmount(() => {
 }
 
 /* ── Stream 模拟面板 ── */
+
+.server-panel {
+  margin-top: 1.25rem;
+}
+
+.server-desc {
+  margin: 0 0 1rem;
+  color: #6b7280;
+  font-size: 0.82rem;
+  line-height: 1.6;
+}
+
+.server-desc__note {
+  display: block;
+  margin-top: 0.35rem;
+  color: #9ca3af;
+}
+
+.server-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.server-input {
+  flex: 1 1 260px;
+  min-width: 200px;
+}
+
+.server-error {
+  margin: 0.85rem 0 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  background: #fef2f2;
+  color: #b91c1c;
+  font-size: 0.82rem;
+  word-break: break-all;
+}
+
+.server-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1rem;
+  margin-top: 0.85rem;
+  padding-top: 0.75rem;
+  border-top: 1px dashed #e5e7eb;
+  color: #6b7280;
+  font-size: 0.78rem;
+}
+
+.server-meta code {
+  padding: 0.05rem 0.35rem;
+  border-radius: 4px;
+  background: #f3f4f6;
+  color: #374151;
+}
 
 .stream-panel {
   margin-top: 1.25rem;
