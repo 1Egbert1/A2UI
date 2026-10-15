@@ -1,9 +1,9 @@
 import { strict as assert } from 'assert';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 
 import { h, type VNode } from 'vue';
 
+import { columnRowMixMessages } from '../../a2ui-core/mock/column-row-mix';
+import { columnTextsMessages } from '../../a2ui-core/mock/column-texts';
 import { init, parseA2UI, resetA2UIStore } from 'a2ui-core';
 import { renderMap, renderText } from '../src/renderMap';
 import { fakeContext, renderHtml } from './support';
@@ -16,8 +16,9 @@ import { fakeContext, renderHtml } from './support';
  * 标记，用来把 DOM 反查回 store 里的组件。
  */
 
-const COLUMN_MOCK = new URL('../../a2ui-core/mock/column-texts.jsonl', import.meta.url);
-const MIX_MOCK = new URL('../../a2ui-core/mock/column-row-mix.jsonl', import.meta.url);
+/** mock 以「一行一条消息」的数组提供，这里拼回整段 JSONL 文本供一次性解析用。 */
+const COLUMN_TEXT_JSONL = columnTextsMessages.join('\n');
+const MIX_JSONL = columnRowMixMessages.join('\n');
 
 /** 混排 mock 里的组件总数（一组件一 id），用来锁住「id 不丢也不重」。 */
 const MIX_COMPONENT_COUNT = 26;
@@ -131,7 +132,7 @@ describe('A2UI Vue：渲染根元素的 id', () => {
 
     it('should give every component of the mix mock a distinct id', async () => {
       init(renderMap);
-      const state = parseA2UI(readFileSync(fileURLToPath(MIX_MOCK), 'utf8'));
+      const state = parseA2UI(MIX_JSONL);
 
       const html = await renderHtml(state.treeMap['column-row-mix'].root.vnode as VNode);
 
@@ -167,13 +168,13 @@ describe('A2UI Vue：渲染根元素的 id', () => {
     });
   });
 
-  describe('真实解析链路（mock/column-texts.jsonl）', () => {
+  describe('真实解析链路（mock/column-texts）', () => {
     beforeEach(() => {
       init(renderMap);
     });
 
     it('should stamp every component in the rendered tree with its id', async () => {
-      const state = parseA2UI(readFileSync(fileURLToPath(COLUMN_MOCK), 'utf8'));
+      const state = parseA2UI(COLUMN_TEXT_JSONL);
 
       const html = await renderHtml(state.treeMap['column-texts'].root.vnode as VNode);
 
@@ -189,7 +190,7 @@ describe('A2UI Vue：渲染根元素的 id', () => {
     });
 
     it('should expose the id on the stored vnode, not only in the DOM', () => {
-      const state = parseA2UI(readFileSync(fileURLToPath(COLUMN_MOCK), 'utf8'));
+      const state = parseA2UI(COLUMN_TEXT_JSONL);
 
       const root = state.treeMap['column-texts'].root;
       assert.equal((root.vnode as VNode).props?.id, 'column-texts-root');

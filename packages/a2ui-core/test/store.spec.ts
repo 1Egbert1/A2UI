@@ -51,6 +51,7 @@ describe('A2UI Store', () => {
               _vnode: null,
               ownerSurfaceId: 's1',
               protocol: '{}',
+              hasMounted: false,
             },
           },
         },

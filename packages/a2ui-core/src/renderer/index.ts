@@ -27,6 +27,22 @@ export interface RenderContext {
   resolve: (componentId: string) => unknown;
   /** 读取本 surface 数据模型上某个 path（如 `/user/name`）的值；取不到时返回 `undefined`。 */
   read: (path: string) => unknown;
+  /**
+   * 该组件是否**已经播过入场动画**（即 store 里这个 HydrateNode 的 `hasMounted`）。
+   *
+   * 渲染引擎据此决定要不要给这个组件挂入场动画：
+   * - `false` —— 这是它第一次被渲染，应播一次；
+   * - `true` —— 已经播过（或宿主不需要动画），保持静止，重渲染不要重播。
+   */
+  hasMounted: boolean;
+  /**
+   * 入场动画播放完毕时调用：把 store 里该节点的 `hasMounted` 置为 `true`（「标记清除」的清除）。
+   *
+   * core 只提供这个落点，**动画怎么播由渲染引擎自己决定**（CSS 过渡 / Web Animations API /
+   * 原生动画都行）；渲染引擎不需要知道 store 长什么样，只要在合适的时刻调它一次。
+   * 幂等：重复调用无副作用（详见 store 的 markHydrateNodeMounted）。
+   */
+  markMounted: () => void;
 }
 
 /** 单个组件的渲染函数：入参是该组件的属性对象与渲染上下文，返回本框架的渲染节点实例。 */

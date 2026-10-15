@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 
 import type { VNode } from 'vue';
 
+import { columnRowMixMessages } from '../../a2ui-core/mock/column-row-mix';
+import { columnTextsMessages } from '../../a2ui-core/mock/column-texts';
 import { init, parseA2UI, resetA2UIStore } from 'a2ui-core';
 import { renderMap } from '../src/renderMap';
 import { jsonl, renderHtml } from './support';
@@ -97,7 +99,8 @@ describe('A2UI Vue 端到端渲染（官方示例）', () => {
  * 这里验的是「treebuilder 组装出来的父子关系」与「Vue 真正渲出的嵌套」是否一致 ——
  * 前者只是数据，后者才是用户看到的东西。
  */
-const COLUMN_MOCK = new URL('../../a2ui-core/mock/column-texts.jsonl', import.meta.url);
+/** mock 以「一行一条消息」的数组提供，这里拼回整段 JSONL 文本供一次性解析用。 */
+const COLUMN_TEXT_JSONL = columnTextsMessages.join('\n');
 
 describe('A2UI Vue：column-texts 的父子组装与渲染', () => {
   beforeEach(() => {
@@ -106,7 +109,7 @@ describe('A2UI Vue：column-texts 的父子组装与渲染', () => {
   });
 
   it('should assemble one Column with three Text children', () => {
-    const state = parseA2UI(readFileSync(fileURLToPath(COLUMN_MOCK), 'utf8'));
+    const state = parseA2UI(COLUMN_TEXT_JSONL);
 
     assert.deepEqual(Object.values(state.errorMap), [], 'mock 不应产生任何错误');
 
@@ -124,7 +127,7 @@ describe('A2UI Vue：column-texts 的父子组装与渲染', () => {
   });
 
   it('should render the three children inside a vertical flex Column, in order', async () => {
-    const state = parseA2UI(readFileSync(fileURLToPath(COLUMN_MOCK), 'utf8'));
+    const state = parseA2UI(COLUMN_TEXT_JSONL);
 
     const html = await renderHtml(state.treeMap['column-texts'].root.vnode as VNode);
 
@@ -150,7 +153,7 @@ describe('A2UI Vue：column-texts 的父子组装与渲染', () => {
  * core 自带的混排 mock：多层 Column / Row 交替（最深 5 层），Row 里横排 Card，
  * Card 内套 Column，底部 Row 再嵌 Column + Row。这里验的是深层嵌套能否整棵渲出来。
  */
-const MIX_MOCK = new URL('../../a2ui-core/mock/column-row-mix.jsonl', import.meta.url);
+const MIX_JSONL = columnRowMixMessages.join('\n');
 
 describe('A2UI Vue：column-row-mix 的多层混排渲染', () => {
   beforeEach(() => {
@@ -159,7 +162,7 @@ describe('A2UI Vue：column-row-mix 的多层混排渲染', () => {
   });
 
   it('should render the nested Column/Row mix without errors', async () => {
-    const state = parseA2UI(readFileSync(fileURLToPath(MIX_MOCK), 'utf8'));
+    const state = parseA2UI(MIX_JSONL);
 
     assert.deepEqual(Object.values(state.errorMap), [], '混排 mock 不应产生任何错误');
 
@@ -175,7 +178,7 @@ describe('A2UI Vue：column-row-mix 的多层混排渲染', () => {
   });
 
   it('should resolve the data-model values bound inside the deepest Columns', async () => {
-    const state = parseA2UI(readFileSync(fileURLToPath(MIX_MOCK), 'utf8'));
+    const state = parseA2UI(MIX_JSONL);
 
     const html = await renderHtml(state.treeMap['column-row-mix'].root.vnode as VNode);
 
@@ -191,7 +194,7 @@ describe('A2UI Vue：column-row-mix 的多层混排渲染', () => {
   });
 
   it('should stamp a surface-prefixed id on every component of the mix', async () => {
-    const state = parseA2UI(readFileSync(fileURLToPath(MIX_MOCK), 'utf8'));
+    const state = parseA2UI(MIX_JSONL);
 
     const html = await renderHtml(state.treeMap['column-row-mix'].root.vnode as VNode);
 

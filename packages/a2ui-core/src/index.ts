@@ -1,5 +1,6 @@
 export * from './parser';
 export * from './renderer';
+export * from './tree-render';
 export * from './vnode';
 export * from './treebuilder';
 export * from './hydrate';

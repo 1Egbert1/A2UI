@@ -1,5 +1,6 @@
 import { createStore } from 'zustand/vanilla';
 import { setRenderMap, type RenderMap } from '../renderer';
+import { renderTree, setTreeRenderer, type TreeRenderer } from '../tree-render';
 import type { ComponentTree, TreeMap } from '../treebuilder/types';
 import type { A2uiStore, A2UIError, HydrateNode, Surface } from './types';
 
@@ -27,14 +28,21 @@ export type A2UIStoreInstance = ReturnType<typeof createA2UIStore>;
 let store: ReturnType<typeof createA2UIStore> | undefined;
 
 /**
- * 初始化全局单例 store，并注入组件渲染表。
+ * 初始化全局单例 store，并注入组件渲染表与组件树渲染器。
  *
- * renderMap 由渲染引擎提供（如 a2ui-vue 的 renderMap）。它是配置而非状态，
- * 因此不放进 store state，也不受 clearStore 影响；重复调用 init 会用新表整体替换。
+ * - `renderMap` 由渲染引擎提供（如 a2ui-vue 的 renderMap），管「单个组件渲染成什么」；
+ * - `treeRenderer` 由宿主提供，管「整棵树挂载到哪里」。**调用时机由 core 决定**
+ *   （每次 `buildTree` 之后、以及 `clearStore()` 之后），宿主不自己触发。
+ *
+ * 两者都是配置而非状态，因此不放进 store state，也不受 clearStore 影响；
+ * 重复调用 init 会用新值整体替换，不传的参数保持原样。
  */
-export const init = (renderMap?: RenderMap) => {
+export const init = (renderMap?: RenderMap, treeRenderer?: TreeRenderer) => {
   if (renderMap) {
     setRenderMap(renderMap);
+  }
+  if (treeRenderer) {
+    setTreeRenderer(treeRenderer);
   }
   if (!store) {
     store = createA2UIStore();
@@ -162,6 +170,32 @@ export const clearHydrateNodes = () => {
   getA2UIStore().setState({ hydrateNodeMap: {} });
 };
 
+/**
+ * 把一个 hydrateNode 的 `hasMounted` 置为 `true` —— 入场动画播完后的「清除」。
+ *
+ * 由渲染引擎在动画结束时回调（它拿到的是 `RenderContext.markMounted`），是
+ * 「标记清除」里唯一会写这个标记的地方（「标记」由 parser 在登记新组件时置 `false`）。
+ *
+ * 两个实现要点：
+ * - **原地修改** `node.hasMounted`，再换掉 map 引用触发订阅者。与 `hydrate` 同样的取舍：
+ *   `Surface.rootNode` 与 `treeMap[*].root.vnode` 都持有同一个节点对象，
+ *   若像 `updateHydrateNode` 那样生成新对象，这两处会悄悄与 hydrateNodeMap 失联，
+ *   下一次 `buildTree` 就会读到过期的 `_vnode`。
+ * - 已经是 `true`、或该 componentId 不存在时**原样返回**，不产生多余通知 ——
+ *   动画结束事件在深层嵌套里可能被冒泡重复触发，这里天然幂等。
+ */
+export const markHydrateNodeMounted = (componentId: string) => {
+  const store = getA2UIStore();
+  const node = store.getState().hydrateNodeMap[componentId];
+
+  if (!node || node.hasMounted) {
+    return;
+  }
+
+  node.hasMounted = true;
+  store.setState({ hydrateNodeMap: { ...store.getState().hydrateNodeMap } });
+};
+
 // Data Model CRUD（按 surfaceId 维度）
 export const setDataModel = (surfaceId: string, dataModel: Record<string, unknown>) => {
   getA2UIStore().setState((state) => ({
@@ -284,4 +318,9 @@ export const clearStore = () => {
     treeMap: {},
     errorMap: {},
   });
+
+  // 五张表清空后组件树也没了，通知渲染器把页面上的旧树一并撤掉。
+  // 这条不能省：clearStore 常被宿主用于「不经过 parse 的清场」（如 playground 切换 mock），
+  // 没有它，上一棵树的 DOM 会一直留在页面上。
+  renderTree({});
 };

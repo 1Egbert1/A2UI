@@ -18,6 +18,10 @@ interface ContextOptions {
   nodes?: Record<string, unknown>;
   /** `read` 的数据来源，模拟 surface 的数据模型。 */
   data?: Record<string, unknown>;
+  /** 该组件是否已播过入场动画（默认为 false，即「新组件，需要播」）。 */
+  hasMounted?: boolean;
+  /** 入场动画结束时的回调；默认是个记录不到任何东西的空函数。 */
+  markMounted?: () => void;
 }
 
 /** 手搓一个渲染上下文，用来单独驱动某个组件的渲染函数。 */
@@ -26,11 +30,15 @@ export const fakeContext = ({
   surfaceId = 'surface',
   nodes = {},
   data = {},
+  hasMounted = false,
+  markMounted = () => {},
 }: ContextOptions = {}): RenderContext => ({
   componentId,
   surfaceId,
   resolve: (id: string) => nodes[id] ?? null,
   read: (path: string) => readPath(data, path),
+  hasMounted,
+  markMounted,
 });
 
 /** 把官方示例的 JSON 数组转成 JSONL（每行一条消息），与线上协议一致。 */

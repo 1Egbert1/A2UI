@@ -1,7 +1,6 @@
 import { strict as assert } from 'assert';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 
+import { simpleTextMessages } from '../mock/simple-text';
 import { parseA2UI } from '../src/parser';
 import { setRenderMap } from '../src/renderer';
 import {
@@ -41,8 +40,8 @@ const rawSurfaceUpdate = (surfaceId: string, components: Array<{ id: string; com
 const literalOf = (props: Record<string, unknown>): string =>
   (props.text as { literalString?: string } | undefined)?.literalString ?? '';
 
-const mockFilePath = fileURLToPath(new URL('../mock/simple-text.jsonl', import.meta.url));
-const simpleTextJsonl = readFileSync(mockFilePath, 'utf8');
+/** mock 以「一行一条消息」的数组提供，这里拼回整段 JSONL 文本供一次性解析用。 */
+const simpleTextJsonl = simpleTextMessages.join('\n');
 
 const MOCK_SURFACE_ID = 'simple-text';
 const MOCK_ROOT_ID = 'root';
@@ -418,7 +417,7 @@ describe('A2UI Parser', () => {
     });
   });
 
-  describe('mock/simple-text.jsonl（端到端）', () => {
+  describe('mock/simple-text（端到端）', () => {
     // mock 里的组件是 Text；注册它代表「渲染引擎已就绪」，缺渲染器的情况由下面的用例单独覆盖。
     beforeEach(() => {
       setRenderMap({ Text: () => null });

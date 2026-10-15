@@ -28,6 +28,9 @@ import type {
  *
  * 另外，此时也不创建 Surface —— Surface.rootNode 是必填字段，只有 beginRendering
  * 才能确定根节点，所以 Surface 在 beginRendering 时才诞生。
+ *
+ * 新组件还在这里被打上 `hasMounted: false` 的「标记」：它提示渲染引擎「这个组件需要播一次
+ * 入场动画」，动画结束后渲染引擎会回调 store 把标记清除（详见 store 的 markHydrateNodeMounted）。
  */
 export const handleSurfaceUpdate = (message: SurfaceUpdateMessage): void => {
   for (const definition of message.components) {
@@ -42,11 +45,24 @@ export const handleSurfaceUpdate = (message: SurfaceUpdateMessage): void => {
       );
     }
 
+    // 同一 componentId 重复定义（协议允许，流式里少见）：原地更新协议与归属，
+    // 保留 hasMounted —— 已经播过入场动画的节点，不该因为一次重复定义又淡入一遍。
+    // 原地改还顺带保住了 `Surface.rootNode` 与 hydrateNodeMap 的对象同一性。
+    const existing = getHydrateNode(definition.id);
+    if (existing) {
+      existing.ownerSurfaceId = message.surfaceId;
+      existing.protocol = JSON.stringify(definition.component);
+      addHydrateNode(existing);
+      continue;
+    }
+
     const node: HydrateNode = {
       componentId: definition.id,
       _vnode: null,
       ownerSurfaceId: message.surfaceId,
       protocol: JSON.stringify(definition.component),
+      // 新组件：入场动画还没播过（渲染引擎播完会回调 markHydrateNodeMounted 置 true）。
+      hasMounted: false,
     };
     addHydrateNode(node);
   }

@@ -1,7 +1,8 @@
 import { strict as assert } from 'assert';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 
+import { columnRowMixMessages } from '../mock/column-row-mix';
+import { columnTextsMessages } from '../mock/column-texts';
+import { simpleTextMessages } from '../mock/simple-text';
 import { parseA2UI } from '../src/parser';
 import { setRenderMap } from '../src/renderer';
 import {
@@ -35,6 +36,7 @@ const node = (
   _vnode: `vnode:${componentId}`,
   ownerSurfaceId: surfaceId,
   protocol: JSON.stringify(component),
+  hasMounted: false,
 });
 
 /** Column 组件定义；children.explicitList 即子组件 id 列表。 */
@@ -120,10 +122,9 @@ const nestedJsonl = jsonl(
   { beginRendering: { surfaceId: 'nested', root: 'root' } },
 );
 
-const mockFilePath = fileURLToPath(new URL('../mock/simple-text.jsonl', import.meta.url));
-const simpleTextJsonl = readFileSync(mockFilePath, 'utf8');
-const columnMockPath = fileURLToPath(new URL('../mock/column-texts.jsonl', import.meta.url));
-const columnTextsJsonl = readFileSync(columnMockPath, 'utf8');
+/** mock 以「一行一条消息」的数组提供，这里拼回整段 JSONL 文本供一次性解析用。 */
+const simpleTextJsonl = simpleTextMessages.join('\n');
+const columnTextsJsonl = columnTextsMessages.join('\n');
 
 describe('A2UI TreeBuilder', () => {
   beforeEach(() => {
@@ -367,7 +368,7 @@ describe('A2UI TreeBuilder', () => {
     });
   });
 
-  describe('mock/column-texts.jsonl（端到端：一父三子）', () => {
+  describe('mock/column-texts（端到端：一父三子）', () => {
     beforeEach(() => {
       // Column/Text 都注册成简单标记，方便同时断言「树结构」与「渲染结果」。
       setRenderMap({
@@ -541,11 +542,8 @@ describe('A2UI TreeBuilder', () => {
     });
   });
 
-  describe('mock/column-row-mix.jsonl（多层 Column / Row 混排）', () => {
-    const mixJsonl = readFileSync(
-      fileURLToPath(new URL('../mock/column-row-mix.jsonl', import.meta.url)),
-      'utf8',
-    );
+  describe('mock/column-row-mix（多层 Column / Row 混排）', () => {
+    const mixJsonl = columnRowMixMessages.join('\n');
 
     beforeEach(() => {
       // 只关心树结构，渲染器给个标记即可。

@@ -2,7 +2,9 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "./dist-test",
-    "rootDir": ".",
+    // 测试会直接 import a2ui-core 的 mock 源码（mock 不在本包内），
+    // 所以 rootDir 必须抬到仓库根，否则 tsc 报 TS6059（文件不在 rootDir 下）。
+    "rootDir": "../..",
     "noEmit": true,
     "types": ["mocha", "node"]
   },

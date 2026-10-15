@@ -15,18 +15,23 @@
 import { readPath } from '../binding';
 import { recordError } from '../error';
 import { resolveRenderer, splitComponent, type RenderContext } from '../renderer';
-import { getA2UIStore } from '../store';
+import { getA2UIStore, markHydrateNodeMounted } from '../store';
 import { ErrorType, type HydrateNode } from '../store/types';
 
 /**
  * 构造某个节点的渲染上下文。
  *
  * - `resolve` 从 store 实时读取，且**限制在同一 surface 内**——跨 surface 引用一律视为无；
- * - `read` 同样实时读取，所以后到的 `dataModelUpdate` 也能被延迟求值的渲染器看到。
+ * - `read` 同样实时读取，所以后到的 `dataModelUpdate` 也能被延迟求值的渲染器看到；
+ * - `hasMounted` / `markMounted` 是入场动画的「读标记 / 清标记」两端：读的是当前节点的
+ *   `hasMounted`，清除则回写到 store（`markHydrateNodeMounted`）。渲染引擎只跟上下文打交道，
+ *   不必知道 store 的结构。
  */
 const createContext = (node: HydrateNode): RenderContext => ({
   componentId: node.componentId,
   surfaceId: node.ownerSurfaceId,
+  hasMounted: node.hasMounted,
+  markMounted: () => markHydrateNodeMounted(node.componentId),
   resolve: (componentId: string) => {
     const target = getA2UIStore().getState().hydrateNodeMap[componentId];
     if (!target || target.ownerSurfaceId !== node.ownerSurfaceId) {

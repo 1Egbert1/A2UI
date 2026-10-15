@@ -8,6 +8,11 @@
 packages - a2ui sdk npm 包
   ├── a2ui-core:包含UI组件库和渲染引擎，包含以下模块：
     ├── parser:解析a2ui协议的模块
+      ├── parseA2UI：一次性解析整段 JSONL
+      ├── createJSONLStream：行框定的流式解析（信任换行是消息边界）
+      ├── createA2UIBuffer：JSON 框定的缓冲流（括号配对取完整值；**不等整条 surfaceUpdate
+      │     收完** —— 每有一个组件闭合就补全成「一个组件一条完整消息」，做到边到边渲染），
+      │     配套 chunkText / simulateTextStream 模拟「每 50ms 吐 50 字符」的字符流
     ├── vnode：用来映射管理a2ui协议生成的组件
     ├── treebuilder:用来构建a2ui协议生成的组件树的模块
   ├── a2ui-vue:基于Vue3的a2ui渲染引擎，用于在Vue3中使用A2UI组件库

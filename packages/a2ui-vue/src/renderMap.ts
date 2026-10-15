@@ -1,5 +1,6 @@
-import type { RenderMap } from 'a2ui-core';
+import type { ComponentRenderer, RenderMap } from 'a2ui-core';
 
+import { withEntranceAnimation } from './internal/entrance';
 import { withRootId, type VueNode } from './internal/node';
 import {
   renderCard,
@@ -31,6 +32,17 @@ export * from './renderers/form';
 export * from './renderers/leaf';
 export { A2UINode, withRootId } from './internal/node';
 export type { VueNode } from './internal/node';
+export { withEntranceAnimation, ENTRANCE_DURATION } from './internal/entrance';
+
+/**
+ * 每个组件都过一遍的两层包装，合成一个：
+ * 1. `withRootId` —— 给根元素补 `id = surfaceId-componentId`（组件身份）；
+ * 2. `withEntranceAnimation` —— 首次渲染的组件播一次入场动画，播完回写标记。
+ *
+ * 上面 re-export 出去的仍是**不带 id、不带动画的原始渲染器**（供单元测试单独驱动）。
+ */
+const enhance = (renderer: ComponentRenderer<VueNode>): ComponentRenderer<VueNode> =>
+  withEntranceAnimation(withRootId(renderer));
 
 /**
  * A2UI 组件类型名 → Vue 渲染函数。
@@ -44,31 +56,30 @@ export type { VueNode } from './internal/node';
  * - container：按 componentId 引用子组件，负责布局与其自身的交互状态；
  * - form：表单控件。
  *
- * 每个登记项都过一遍 `withRootId`：登记的是「带 id 的渲染函数」，
- * 而上面 re-export 出去的仍是**不带 id 的原始渲染器**（供单元测试单独驱动）。
+ * 每个登记项都过一遍 `enhance`（= 加 id + 入场动画），保证所有组件行为一致。
  */
 export const renderMap: RenderMap<VueNode> = {
   // leaf
-  Text: withRootId(renderText),
-  Image: withRootId(renderImage),
-  Icon: withRootId(renderIcon),
-  Video: withRootId(renderVideo),
-  AudioPlayer: withRootId(renderAudioPlayer),
-  Divider: withRootId(renderDivider),
+  Text: enhance(renderText),
+  Image: enhance(renderImage),
+  Icon: enhance(renderIcon),
+  Video: enhance(renderVideo),
+  AudioPlayer: enhance(renderAudioPlayer),
+  Divider: enhance(renderDivider),
 
   // container
-  Row: withRootId(renderRow),
-  Column: withRootId(renderColumn),
-  List: withRootId(renderList),
-  Card: withRootId(renderCard),
-  Tabs: withRootId(renderTabs),
-  Modal: withRootId(renderModal),
+  Row: enhance(renderRow),
+  Column: enhance(renderColumn),
+  List: enhance(renderList),
+  Card: enhance(renderCard),
+  Tabs: enhance(renderTabs),
+  Modal: enhance(renderModal),
 
   // form
-  Button: withRootId(renderButton),
-  CheckBox: withRootId(renderCheckBox),
-  TextField: withRootId(renderTextField),
-  DateTimeInput: withRootId(renderDateTimeInput),
-  MultipleChoice: withRootId(renderMultipleChoice),
-  Slider: withRootId(renderSlider),
+  Button: enhance(renderButton),
+  CheckBox: enhance(renderCheckBox),
+  TextField: enhance(renderTextField),
+  DateTimeInput: enhance(renderDateTimeInput),
+  MultipleChoice: enhance(renderMultipleChoice),
+  Slider: enhance(renderSlider),
 };
