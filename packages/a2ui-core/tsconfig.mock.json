@@ -1,0 +1,22 @@
+{
+  // mock 数据的**独立构建**。
+  //
+  // 为什么要单独一份：主构建（tsconfig.json）的 rootDir 是 `./src`，include 只有 `src/**/*`，
+  // 所以 mock/ 不会进 dist；而服务端现在需要在**运行时**读到这些 fixture（把示例数据也走一遍
+  // 真实接口），光有 `.d.ts` 不够。
+  //
+  // 两个关键点：
+  //   1. `rootDir: "."`（包根，而不是 `./mock`）—— 否则 `mock/index.ts` 会输出成 `dist/index.js`，
+  //      与主构建的 `dist/index.js` 撞名、互相覆盖；
+  //   2. `module: CommonJS` —— 服务端是 ts-node 跑的 CJS，必须能 `require` 这个产物。
+  //      注意主构建产出的是 ESM 语法（继承 base 的 `module: ESNext`），而包没有 `"type": "module"`，
+  //      那份 js 对 Node 而言本来也不可用（服务端此前只用 `import type`，从不加载它）。
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "./dist",
+    "module": "CommonJS",
+    "moduleResolution": "node"
+  },
+  "include": ["mock/**/*"]
+}

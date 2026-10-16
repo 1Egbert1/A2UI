@@ -9,7 +9,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && tsc -p tsconfig.mock.json",
     "dev": "tsc --watch",
     "test": "mocha 'test/**/*.spec.ts'",
     "test:parser": "mocha --config .mocharc.parser.json",
