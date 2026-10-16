@@ -81,6 +81,31 @@ describe('extract / extractLine', () => {
     assert.match(result.warnings[0], /JSON 解析失败/);
   });
 
+  it('数组元素后多一个 } 时自动修复并采纳', () => {
+    const good =
+      '{"surfaceUpdate":{"surfaceId":"sf","components":[{"id":"a","component":{"Text":{"text":{"literalString":"hi"}}}}]}}';
+    // 在 components 数组闭合前多塞一个 }，模拟模型在组件收尾处多写一个括号。
+    const bad = good.replace(']}}', '}]}}');
+    const result = extractLine(bad);
+
+    assert.equal(result.messages.length, 1);
+    const message = result.messages[0];
+    assert.ok('surfaceUpdate' in message);
+    if ('surfaceUpdate' in message) {
+      assert.equal(message.surfaceUpdate.components.length, 1);
+    }
+    assert.match(result.warnings[0] ?? '', /已自动修复/);
+  });
+
+  it('不是「多 }」的坏行（如少逗号）照旧记坏行、不误伤', () => {
+    // 两个对象间少了逗号：V8 报 Unexpected token，不属于可修复的「多 }」模式。
+    const result = extractLine(
+      '{"surfaceUpdate":{"surfaceId":"sf","components":[]}}{"beginRendering":{"surfaceId":"sf","root":"r"}}',
+    );
+    assert.equal(result.messages.length, 0);
+    assert.match(result.warnings[0], /JSON 解析失败/);
+  });
+
   it('合法 JSON 但不是协议消息时给出具体原因', () => {
     const result = extractLine('{"foo":1}');
     assert.equal(result.messages.length, 0);

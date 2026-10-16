@@ -90,6 +90,34 @@ export const A2UI_CUSTOM_EVENT = {
   surface: 'a2ui.surface',
   /** 一条完整的 A2UI 协议消息（客户端可直接喂给 a2ui-core 的解析器）。 */
   message: 'a2ui.message',
+  /**
+   * 有一行没能解析成协议消息。
+   *
+   * 单独发一帧，而不是混在 `RUN_FINISHED` 的 result 里：告警的价值在于**尽早**，客户端可以
+   * 边收边提示「这轮有内容没解析成功」，而不是等整轮结束才补一句。
+   */
+  warning: 'a2ui.warning',
+} as const;
+
+/** 模型侧事件在 AG-UI 之上的 CUSTOM 事件名（A2UI 与对话两条流共用）。 */
+export const MODEL_CUSTOM_EVENT = {
+  /**
+   * 这一轮用的是哪个模型。
+   *
+   * 单独发一帧而不是挂在 `RUN_STARTED` 上：AG-UI 的事件字段是规范定的，塞私有字段进去
+   * 会让标准客户端收到未知字段。而「到底打的是哪个模型」恰恰是「仅测模型链接」时最想确认的
+   * 那件事（`.env` 改错了模型名，只有在回复里才看得出来）。
+   */
+  info: 'model.info',
+  /**
+   * 思考过程的增量。
+   *
+   * 为什么单独走一帧而不是混进 `TEXT_MESSAGE_CONTENT`：那个事件的语义是「助手说的话」，
+   * 而思考内容**不是回复**——混进去之后客户端既没法把「模型在想」和「模型在答」分开，
+   * 生成界面那条路还会把这段散文当成模型输出。分开之后「中间状态」才是免费的：
+   * 收到 reasoning 却还没收到 content，就说明模型在思考。
+   */
+  reasoning: 'model.reasoning',
 } as const;
 
 /**
@@ -97,8 +125,12 @@ export const A2UI_CUSTOM_EVENT = {
  *
  * 只写 `data:` 一行 —— 协议规定消费者必须忽略 `id:` / `event:` / `retry:`，
  * 那就不发；空行结尾是事件分隔符，不能省。
+ *
+ * 参数刻意收成 `unknown`：帧的**编码方式**与 AG-UI 无关，任何可 JSON 序列化的载荷都适用。
+ * 场景字符流（`scenarios/:id/stream`）的事件集就不是 AG-UI 的，但传输层完全一样 ——
+ * 与其在那边再写一遍这一行，不如让类型放开。
  */
-export const encodeSse = (event: AgUiEvent): string => `data: ${JSON.stringify(event)}\n\n`;
+export const encodeSse = (event: unknown): string => `data: ${JSON.stringify(event)}\n\n`;
 
 /** SSE 注释行，用作心跳（协议允许生产者任意频率发送）。 */
 export const SSE_COMMENT = ': keep-alive\n\n';

@@ -1,61 +1,23 @@
 import { after, before, describe, it } from 'mocha';
 import assert from 'node:assert/strict';
 import type { Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
-import { createApp } from '../src/app';
 import type { AgUiEvent } from '../src/agui/events';
-import type { ServerConfig } from '../src/config';
-
-const config: ServerConfig = {
-  port: 0,
-  agentProvider: 'mock',
-  openai: { apiKey: '', baseURL: undefined, model: 'gpt-4o-mini', temperature: 0.2 },
-  historyLimit: 12,
-  sessionTtlMs: 0,
-  mockStreamDelayMs: 0,
-};
+import { a2uiMessages, close, listen, makeConfig, post as postTo, readSseEvents } from './helpers';
 
 let server: Server;
 let base = '';
 
-const post = (path: string, body: unknown): Promise<Response> =>
-  fetch(`${base}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+const post = (path: string, body: unknown): Promise<Response> => postTo(base, path, body);
 
-/** 把 SSE 响应体拆成事件数组（流会自然结束，直接读全文即可）。 */
-const readSse = async (response: Response): Promise<AgUiEvent[]> => {
-  const body = await response.text();
-  return body
-    .split('\n\n')
-    .map((block) => block.trim())
-    .filter((block) => block.startsWith('data: '))
-    .map((block) => JSON.parse(block.slice('data: '.length)) as AgUiEvent);
-};
-
-const a2uiMessages = (events: AgUiEvent[]) =>
-  events
-    .filter(
-      (event): event is Extract<AgUiEvent, { type: 'CUSTOM' }> =>
-        event.type === 'CUSTOM' && event.name === 'a2ui.message',
-    )
-    .map((event) => event.value);
+/** 把 SSE 响应体拆成事件数组。 */
+const readSse = (response: Response): Promise<AgUiEvent[]> => readSseEvents<AgUiEvent>(response);
 
 describe('server / 端到端（mock agent）', () => {
   before(() => {
-    const { app } = createApp({ config, logger: false });
-    server = app.listen(0);
-    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    ({ server, base } = listen(makeConfig()));
   });
 
-  after(
-    () =>
-      new Promise<void>((resolve) => {
-        server.close(() => resolve());
-      }),
-  );
+  after(() => close(server));
 
   it('GET /health 报出当前 provider', async () => {
     const response = await fetch(`${base}/health`);

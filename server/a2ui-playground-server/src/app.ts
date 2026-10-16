@@ -14,14 +14,17 @@ import Koa from 'koa';
 import bodyParser from 'koa-bodyparser';
 import Router from 'koa-router';
 import { createA2UIAgent, type A2UIAgent } from './agent';
+import { createModelChat, type ModelChat } from './chat';
 import { loadConfig, type ServerConfig } from './config';
-import { BadRequestError } from './inbound';
+import { BadRequestError, ServiceUnavailableError } from './inbound';
 import { registerRoutes } from './routes';
 import { SessionStore } from './session';
 
 export interface AppOptions {
   config?: ServerConfig;
   agent?: A2UIAgent;
+  /** 纯模型对话（`/api/a2ui/chat`）。测试可注入替身，从而不必真打模型。 */
+  chat?: ModelChat;
   sessions?: SessionStore;
   /** 设为 false 关掉请求日志（测试里免得刷屏）。 */
   logger?: boolean;
@@ -31,6 +34,7 @@ export interface AppParts {
   app: Koa;
   config: ServerConfig;
   agent: A2UIAgent;
+  chat: ModelChat;
   sessions: SessionStore;
 }
 
@@ -69,6 +73,13 @@ const errorHandler = async (ctx: Koa.Context, next: Koa.Next): Promise<void> => 
       return;
     }
 
+    // 依赖没就绪（如没配模型 Key）：请求本身没问题，别报 400 让客户端去改请求体。
+    if (error instanceof ServiceUnavailableError) {
+      ctx.status = 503;
+      ctx.body = { error: error.message };
+      return;
+    }
+
     ctx.status = 500;
     ctx.body = { error: error instanceof Error ? error.message : '服务端内部错误' };
     ctx.app.emit('error', error, ctx);
@@ -99,6 +110,9 @@ export const createApp = (options: AppOptions = {}): AppParts => {
     options.sessions ??
     new SessionStore({ historyLimit: config.historyLimit, ttlMs: config.sessionTtlMs });
   const agent = options.agent ?? createA2UIAgent(config);
+  // 对话客户端总是按配置构造（哪怕 A2UI 那条走 mock）：它的用途就是验证模型链接。
+  // 没配 Key 时它照样能造出来，只是路由层会先挡下 503 —— 报错集中在请求时，启动不炸。
+  const chat = options.chat ?? createModelChat(config.openai);
 
   const app = new Koa();
   const router = new Router();
@@ -109,10 +123,10 @@ export const createApp = (options: AppOptions = {}): AppParts => {
   app.use(errorHandler);
   app.use(cors);
   app.use(bodyParser());
-  registerRoutes(router, { config, agent, sessions });
+  registerRoutes(router, { config, agent, chat, sessions });
   app.use(router.routes());
   app.use(router.allowedMethods());
   app.use(notFound);
 
-  return { app, config, agent, sessions };
+  return { app, config, agent, chat, sessions };
 };

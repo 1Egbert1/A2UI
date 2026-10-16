@@ -6,6 +6,7 @@ import {
   createSessionId,
   createSurfaceId,
   describeUserAction,
+  normalizeChatRequest,
   normalizeGenerateRequest,
 } from '../src/inbound';
 
@@ -97,6 +98,75 @@ describe('inbound / normalizeGenerateRequest', () => {
     assert.throws(() => normalizeGenerateRequest(null), BadRequestError);
     assert.throws(() => normalizeGenerateRequest([1, 2]), BadRequestError);
     assert.throws(() => normalizeGenerateRequest('hi'), BadRequestError);
+  });
+
+  it('images 带 dataUrl 原样透传到 normalized.images', () => {
+    const result = normalizeGenerateRequest({
+      message: '复刻这张图',
+      images: [{ dataUrl: 'data:image/png;base64,AAAA', name: 'mock.png' }],
+    });
+
+    assert.equal(result.images?.length, 1);
+    assert.equal(result.images?.[0].dataUrl, 'data:image/png;base64,AAAA');
+    assert.equal(result.images?.[0].name, 'mock.png');
+  });
+
+  it('images 只给 url 也能通过', () => {
+    const result = normalizeGenerateRequest({
+      message: '参考这张',
+      images: [{ url: 'https://example.com/x.png' }],
+    });
+
+    assert.equal(result.images?.[0].url, 'https://example.com/x.png');
+  });
+
+  it('images 每项既没 dataUrl 也没 url 时抛 BadRequestError', () => {
+    assert.throws(
+      () => normalizeGenerateRequest({ message: 'x', images: [{ name: 'broken' }] }),
+      BadRequestError,
+    );
+  });
+
+  it('images 不是数组时抛 BadRequestError', () => {
+    assert.throws(
+      () => normalizeGenerateRequest({ message: 'x', images: 'not-an-array' }),
+      BadRequestError,
+    );
+  });
+
+  it('仅有图片、没有文字也视为合法输入', () => {
+    // 多模态：用户可能只甩一张设计稿过来，要求复刻。
+    const result = normalizeGenerateRequest({ images: [{ dataUrl: 'data:image/png;base64,AAAA' }] });
+    assert.equal(result.images?.length, 1);
+    assert.equal(result.message, '');
+  });
+});
+
+describe('inbound / normalizeChatRequest（多模态）', () => {
+  it('images 合并进最后一条 user 消息，变成 content 分片数组', () => {
+    const { messages } = normalizeChatRequest(
+      {
+        message: '描述这张图',
+        images: [{ dataUrl: 'data:image/png;base64,AAAA' }, { url: 'https://x/y.png' }],
+      },
+      '你是一个助手',
+    );
+
+    const user = messages.filter((message) => message.role === 'user').at(-1);
+    assert.ok(user, '应当有一条 user 消息');
+
+    const parts = user.content as Array<{ type: string; text?: string; image_url?: { url: string } }>;
+    assert.ok(Array.isArray(parts), '带图时 content 必须是分片数组');
+    assert.equal(parts[0].type, 'text');
+    assert.match(parts[0].text ?? '', /描述这张图/);
+    assert.equal(parts[1].image_url?.url, 'data:image/png;base64,AAAA');
+    assert.equal(parts[2].image_url?.url, 'https://x/y.png');
+  });
+
+  it('没有图片时 chat 消息仍是纯字符串', () => {
+    const { messages } = normalizeChatRequest({ message: '你好' }, '你是一个助手');
+    const user = messages.filter((message) => message.role === 'user').at(-1);
+    assert.equal(typeof user?.content, 'string');
   });
 });
 

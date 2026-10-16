@@ -103,6 +103,34 @@ export const stripCodeFences = (text: string): string => {
 };
 
 /**
+ * JSON.parse 失败时尝试一种**可验证**的修复：数组元素后多了一个 `}`。
+ *
+ * 模型生成 JSONL 时括号计数不稳，反复在组件收尾处多写一个 `}`（V8 会报
+ * `Expected ',' or ']' after array element ... at position N`）。采纳修复要同时满足：
+ * 报错命中该模式、position 处恰是 `}`、删掉它重新 parse 能成功 —— 三者齐了才采纳；
+ * 采纳后仍要过 `validateMessage`，删错的话那里会兜住。
+ */
+const recoverTrailingBrace = (text: string, error: string): { value: unknown } | null => {
+  if (!error.includes("Expected ',' or ']' after array element")) {
+    return null;
+  }
+  const match = /position (\d+)/.exec(error);
+  if (match === null) {
+    return null;
+  }
+  const position = Number(match[1]);
+  if (text[position] !== '}') {
+    return null;
+  }
+  const candidate = text.slice(0, position) + text.slice(position + 1);
+  try {
+    return { value: JSON.parse(candidate) };
+  } catch {
+    return null;
+  }
+};
+
+/**
  * 抽取一行文本里的消息。一行里若是一个数组，按元素逐个校验（展开为多条）。
  */
 export const extractLine = (line: string): { messages: A2UIMessage[]; warnings: string[] } => {
@@ -112,16 +140,26 @@ export const extractLine = (line: string): { messages: A2UIMessage[]; warnings: 
   }
 
   let parsed: unknown;
+  let recovered = false;
   try {
     parsed = JSON.parse(trimmed);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    return { messages: [], warnings: [`JSON 解析失败 — ${reason}`] };
+    const fixed = recoverTrailingBrace(trimmed, reason);
+    if (fixed === null) {
+      return { messages: [], warnings: [`JSON 解析失败 — ${reason}`] };
+    }
+    parsed = fixed.value;
+    recovered = true;
   }
 
   const candidates = Array.isArray(parsed) ? parsed : [parsed];
   const messages: A2UIMessage[] = [];
   const warnings: string[] = [];
+  if (recovered) {
+    // 修好了就别当「坏行」丢：消息照常采纳，但留一句提示让调用方知道模型这里翻过车。
+    warnings.push('已自动修复：数组元素后多了一个 `}`（已删除）');
+  }
 
   for (const candidate of candidates) {
     const check = validateMessage(candidate);

@@ -4,17 +4,8 @@ import { createA2UIAgent } from '../src/agent';
 import { A2UI_CUSTOM_EVENT, encodeSse, type AgUiEvent } from '../src/agui/events';
 import { runA2UIStream } from '../src/agui/run';
 import type { A2UIAgent } from '../src/agent';
-import type { ServerConfig } from '../src/config';
 import type { AgentProvider, AgentRequest, AgentStreamChunk, A2UIMessage } from '../src/types';
-
-const configOf = (): ServerConfig => ({
-  port: 0,
-  agentProvider: 'mock',
-  openai: { apiKey: '', baseURL: undefined, model: 'gpt-4o-mini', temperature: 0.2 },
-  historyLimit: 12,
-  sessionTtlMs: 0,
-  mockStreamDelayMs: 0,
-});
+import { makeConfig as configOf } from './helpers';
 
 const requestOf = (): AgentRequest => ({ message: '做一个购物车', surfaceId: 'sf-1', history: [] });
 
@@ -24,6 +15,8 @@ const scriptedAgent = (
   stream: () => AsyncGenerator<AgentStreamChunk>,
 ): A2UIAgent => ({
   provider,
+  // 这个 stub 不区分场景，所以两个 provider 读取口报同一个值即可。
+  providerFor: () => provider,
   generate: async () => {
     throw new Error('本测试不使用 generate');
   },
@@ -172,5 +165,26 @@ describe('agui / runA2UIStream 失败路径', () => {
     const error = events.at(-1) as Extract<AgUiEvent, { type: 'RUN_ERROR' }>;
 
     assert.equal(error.message, 'agent 没有产出任何输出');
+  });
+
+  it('坏行以 CUSTOM a2ui.warning 下发，且不打断这一轮', async () => {
+    const agent = scriptedAgent('openai', async function* () {
+      yield { warning: 'JSON 解析失败 — Expecting \',\' delimiter' };
+      yield { message: { beginRendering: { surfaceId: 'sf-1', root: 'root' } } };
+    });
+
+    const { events, types } = await collect(agent);
+
+    const warning = events.find(
+      (event): event is Extract<AgUiEvent, { type: 'CUSTOM' }> =>
+        event.type === 'CUSTOM' && event.name === A2UI_CUSTOM_EVENT.warning,
+    );
+    assert.ok(warning, '坏行必须以 CUSTOM a2ui.warning 下发');
+    assert.match(String((warning.value as { message?: unknown }).message), /JSON 解析失败/);
+
+    // 坏行**不打断这一轮**：后面那条消息照样下发，收尾仍是 RUN_FINISHED。
+    // （静默丢掉才是错的：模型少写一个括号，整棵组件树消失而客户端毫不知情。）
+    assert.equal(types.includes('RUN_FINISHED'), true);
+    assert.equal(types.at(-1), 'RUN_FINISHED');
   });
 });

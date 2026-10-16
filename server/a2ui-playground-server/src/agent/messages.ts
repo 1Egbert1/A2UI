@@ -5,7 +5,13 @@
  * 且它是「协议规则（system）」与「用户意图（user）」的分界线 —— 这条线很值得显式划出来。
  */
 import type { AgentRequest, ChatMessage } from '../types';
-import { buildRevisionHint, buildSystemPrompt } from './prompt';
+import { buildImageHint, buildRevisionHint, buildSystemPrompt } from './prompt';
+
+/** 把一张输入图转成 OpenAI 内容分片。`dataUrl` 优先，否则用 `url`。 */
+const toImagePart = (image: NonNullable<AgentRequest['images']>[number]) => ({
+  type: 'image_url' as const,
+  image_url: { url: image.dataUrl ?? (image.url as string) },
+});
 
 export const buildChatMessages = (request: AgentRequest): ChatMessage[] => {
   // system 恒定：只含 surfaceId 与协议规则，不含任何随轮次变化的内容。
@@ -24,7 +30,20 @@ export const buildChatMessages = (request: AgentRequest): ChatMessage[] => {
     request.history.length > 0
       ? `${buildRevisionHint(request.surfaceId)}\n\n用户：${request.message}`
       : request.message;
-  messages.push({ role: 'user', content: instruction });
+
+  // 多模态：把图片与文本合成一个 content 分片数组放进 user 消息。
+  // 纯文本时仍用 string —— 历史轮次一直是 string，保持最小差异、也避免无图时多一层包裹。
+  if (request.images && request.images.length > 0) {
+    messages.push({
+      role: 'user',
+      content: [
+        { type: 'text', text: buildImageHint(request.images.length) + instruction },
+        ...request.images.map(toImagePart),
+      ],
+    });
+  } else {
+    messages.push({ role: 'user', content: instruction });
+  }
 
   return messages;
 };

@@ -102,16 +102,25 @@ export class SessionStore {
     session.updatedAt = this.now();
   }
 
-  /** 把本轮生成的消息追加进 surface 缓存，并把它设为会话的活跃 surface。 */
+  /**
+   * 把本轮生成的消息追加进 surface 缓存。
+   *
+   * `options.activate` 默认 true —— 正常一轮生成会把该 surface 设为会话的活跃 surface，
+   * 下一轮默认往它上面改。**示例场景要传 false**：它不是「在编辑某个界面」，只是把一份
+   * 素材渲染出来。若也切换活跃 surface，之后再发一句话就会被画到示例的界面上。
+   */
   recordSurface(
     session: SessionState,
     surfaceId: string,
     messages: A2UIMessage[],
+    options: { activate?: boolean } = {},
   ): SurfaceRecord {
     const record = session.surfaces.get(surfaceId) ?? { surfaceId, messages: [] };
     record.messages.push(...messages);
     session.surfaces.set(surfaceId, record);
-    session.surfaceId = surfaceId;
+    if (options.activate ?? true) {
+      session.surfaceId = surfaceId;
+    }
     session.updatedAt = this.now();
     return record;
   }

@@ -11,7 +11,8 @@
  * 「证明链路通」，而不是「生成好看的界面」。
  */
 import type { AgentImplementation } from './provider';
-import type { AgentRequest, A2UIMessage } from '../types';
+import { getScenario } from '../scenarios';
+import type { AgentRequest, A2UIMessage, ModelDelta } from '../types';
 
 /** 说明文案：让使用者一眼看出这不是真模型产出的。 */
 export const MOCK_NOTICE = '本界面由 mock agent 生成（未接入真实模型）。';
@@ -27,11 +28,25 @@ const toTitle = (message: string): string => {
 /**
  * 依据请求构造 mock 消息。
  *
- * 首轮走「完整渲染」；后续轮次只回一条增量 surfaceUpdate（并且**不再发 beginRendering**），
- * 这条分支顺便把「增量修改」在协议上的形态固定了下来，可当作真 agent 的行为参考。
+ * 三条分支，优先级从高到低：
+ * 1. **指定了示例场景** → 原样返回该场景的 fixture（不看 message / history）。
+ *    场景是**自包含的演示数据**，每次都要给全量而不是增量 —— 它不代表「同一段对话的下一轮」；
+ * 2. **有历史轮次** → 只回一条增量 surfaceUpdate（并且**不再发 beginRendering**），
+ *    这条分支顺便把「增量修改」在协议上的形态固定了下来，可当作真 agent 的行为参考；
+ * 3. **首轮** → 完整骨架。
  */
 export const buildMockMessages = (request: AgentRequest): A2UIMessage[] => {
-  const { message, surfaceId, history } = request;
+  const { message, surfaceId, history, scenario } = request;
+
+  if (scenario !== undefined) {
+    const definition = getScenario(scenario);
+    if (definition === undefined) {
+      // 上游（路由）已经校验过场景名，走到这里说明有代码绕过了它。
+      // 仍给出确定行为，别静默退化成「随便生成一个界面」—— 那种失败最难查。
+      throw new Error(`未知的示例场景「${scenario}」`);
+    }
+    return definition.messages;
+  }
 
   if (history.length > 0) {
     return [
@@ -129,12 +144,13 @@ export const createMockAgent = (options: MockAgentOptions = {}): AgentImplementa
       return textOf(request);
     },
 
-    async *stream(request: AgentRequest): AsyncGenerator<string> {
+    async *stream(request: AgentRequest): AsyncGenerator<ModelDelta> {
       for (const chunk of chunkText(textOf(request), chunkSize)) {
         if (delayMs > 0) {
           await new Promise((resolve) => setTimeout(resolve, delayMs));
         }
-        yield chunk;
+        // 离线 mock 不模拟思考过程 —— 没有 `reasoning` 片，客户端自然停在「正在生成」。
+        yield { content: chunk };
       }
     },
   };
