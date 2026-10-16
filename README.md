@@ -24,13 +24,14 @@ flowchart LR
     U(["用户"])
 
     subgraph WEB["web · a2ui-playground（Vite + Vue3）"]
-        PANEL["a2ui-server 面板"]
+        PANEL["对话 + 示例场景下拉"]
         STREAM["Stream 模拟"]
         PREVIEW["渲染预览"]
     end
 
     subgraph SERVER["server · a2ui-playground-server（Koa）"]
         ROUTE["路由 /api/a2ui/run"]
+        SCEN["场景注册表（内置 fixture）"]
         AGENT["agent：mock | openai"]
         SESSION["session 缓存"]
     end
@@ -42,18 +43,22 @@ flowchart LR
 
     U --> PANEL
     U --> STREAM
-    PANEL -->|"POST（?stream=false → JSON）"| ROUTE
+    PANEL -->|"GET /api/a2ui/scenarios"| SCEN
+    PANEL -->|"POST /run（SSE）"| ROUTE
+    ROUTE --> SCEN
     ROUTE --> AGENT
     AGENT -.->|"SSE · AG-UI 事件流"| PANEL
     ROUTE --- SESSION
     PANEL -->|"协议消息 JSONL"| CORE
+    SCEN -.->|"原始 fixture（逐条模式用）"| STREAM
+    SCEN -.->|"SSE · 原始字符流"| STREAM
     STREAM --> CORE
     CORE --> VUE
     VUE --> PREVIEW
 ```
 
-两条数据来源（服务端 / 内置 mock）**最终走同一条解析与渲染链路** —— 这是整个设计里最重要的约束：
-换数据来源不动渲染，改渲染也不动来源。
+两条来路（**示例场景**与**自由输入**）在服务端汇成同一个出口，客户端也只有一条解析与渲染链路 ——
+这是整个设计里最重要的约束：加数据来源不动渲染，改渲染也不动来源。
 
 ### 目录结构
 
@@ -76,7 +81,7 @@ server
 
 | 模块 | 职责 |
 | --- | --- |
-| `parser` | 解析 A2UI 协议。`parseA2UI` 一次性解析整段 JSONL；`createJSONLStream` 行框定流式解析；`createA2UIBuffer` 括号配对取完整值 —— **不等整条 `surfaceUpdate` 收完**，每有一个组件闭合就补成「一个组件一条完整消息」，做到边到边渲染；配套 `chunkText` / `simulateTextStream` 模拟字符流 |
+| `parser` | 解析 A2UI 协议。`parseA2UI` 一次性解析整段 JSONL；`createJSONLStream` 行框定流式解析；`createA2UIBuffer` 括号配对取完整值 —— **不等整条 `surfaceUpdate` 收完**，每有一个组件闭合就补成「一个组件一条完整消息」，做到边到边渲染；配套 `chunkText` / `simulateTextStream` 可把一段文本切成字符流跑起来（playground 现在改用服务端的 `scenarios/:id/stream`，这套留在 SDK 里备离线使用） |
 | `store` | 基于 `zustand/vanilla` 的全局单例状态，`init()` 初始化 |
 | `renderer` | 组件级渲染注册表：`组件类型名 → 渲染函数`，由渲染引擎在 init 时注入 |
 | `treebuilder` | 按容器的 `children` 字段构建组件树 |
@@ -120,14 +125,24 @@ Vue3 组件库。
 
 Vite + Vue3 应用，通过 Vite alias 直接引用各包 `src`，改 SDK 无需先构建。
 
+页面是**左侧舞台 + 右侧聊天栏**的双栏布局（整页不滚动，两栏各自内部滚动）。
+
 主要职责及详细功能：
 
-1. 通过对话方式，让 AI Agent 生成对应的 UI 界面
-2. 预览生成的页面
-3. 支持多轮对话增量调整界面
-4. 预览 a2ui-vue 定义的基础 A2UI 组件
-5. 协议调试 —— **Stream 模拟**面板可逐条推送协议消息，观察边到边渲染过程
-6. 对接服务端 —— **a2ui-server**面板提供「生成（非 SSE）」与「生成（SSE 流式）」两个按钮，直连本地服务端
+1. **示例场景全走接口** —— 顶部下拉的 8 个示例由服务端提供（`GET /api/a2ui/scenarios`），选中即走一次 SSE 运行。示例数据与自由输入共用同一条链路，**不存在「本地渲染」的第二套**。
+2. 通过对话方式，让 AI Agent 生成对应的 UI 界面
+3. 预览生成的页面
+4. 支持多轮对话增量调整界面
+5. 预览 a2ui-vue 定义的基础 A2UI 组件
+6. 协议调试 —— 左侧 **Stream 模拟**页签两条模式，数据都来自服务端：
+   - **逐条（JSONL）**：客户端步进，一条条推给 `createJSONLStream()`，随时停下看 store 变化；
+   - **字符流**：服务端把 fixture 按固定块长吐回来（`GET /api/a2ui/scenarios/:id/stream`），
+     客户端只消费，喂给 `createA2UIBuffer()` —— 切片落在 JSON 任意位置，靠括号配对与协议补全拼回去。
+7. 对接服务端 —— 右侧 **聊天栏**里用输入框 + 发送键走 SSE 流式，收到的协议消息喂进同一套解析链路，组件在左侧预览区一个个长出来
+8. **仅测模型对话** —— 聊天栏标题右侧的「对话 / 界面」开关。切到「对话」后发送键改打
+   `POST /api/a2ui/chat`，气泡里显示模型原话，**不生成界面、不动预览、不碰 store**，
+   多轮由前端自带历史。用于把 baseURL / Key / 模型名这三件事单独验一遍（未配 Key 时
+   气泡里直接显示服务端 503 的原话，写明了该改哪个文件）
 
 ## server —— a2ui-playground-server
 
@@ -140,22 +155,35 @@ Vite + Vue3 应用，通过 Vite alias 直接引用各包 `src`，改 SDK 无需
    - `?stream=false`（也接受 `0` / `no` / `off` / `json`）：一次性 JSON
    - `POST /api/a2ui/generate`：上面那个的**固定别名**，省得脚本与测试记 query
 
-   入站同时接受 AG-UI 的 `RunAgentInput`（`threadId` / `runId` / `messages`）与简写 `{ message }`。
-2. **agent**：`mock`（离线假数据，当前默认）与 `openai` 两个实现，切换开关是 `AGENT_PROVIDER`；
+   入站接受三种形状：AG-UI 的 `RunAgentInput`（`threadId` / `runId` / `messages`）、
+   简写 `{ message }`、示例场景 `{ scenario }`。三者最终汇成同一份入参。
+2. **示例场景**：8 份内置 fixture（来自 `a2ui-core/mock`）经接口提供 ——
+   `GET /api/a2ui/scenarios` 列场景、`GET /api/a2ui/scenarios/:id` 取原始素材、
+   `GET /api/a2ui/scenarios/:id/stream` 把素材按固定块长**字符级**吐出来（`?order=` / `?chunk=` / `?delay=` 可调）、
+   `run` 带 `scenario` 即由 fixture 产出。三条刻意的规则：**场景永远走 fixture，与
+   `AGENT_PROVIDER` 无关**（它是素材不是模型产出）；跑在 **fixture 自带的 surfaceId** 上
+   （不是 id，`product-card` 用的就是 `gallery-product-card`）；**不夺走会话的活跃 surface**。
+3. **agent**：`mock`（离线假数据，当前默认）与 `openai` 两个实现，切换开关是 `AGENT_PROVIDER`；
    两者共用同一套「文本 → 协议消息」抽取与流式行装配，产出必然一致。
-3. **缓存**：会话历史 + 按 surface 累积的协议消息，`GET /api/a2ui/session/:threadId` 可整段回放。
+4. **模型对话**：`POST /api/a2ui/chat` —— **独立的一条路**，只跟模型说话、不产出任何 A2UI 协议。
+   用途是排掉协议层与渲染层的变量，单独验证「baseURL + Key + 模型名」通不通：
+   未配 Key 返回 503（开流之前），成功则流回模型原话（失败走流内 `RUN_ERROR`）。
+   默认接 DeepSeek（`OPENAI_BASE_URL=https://api.deepseek.com` / `OPENAI_MODEL=deepseek-flash`），
+   换网关只改 `.env`。**无状态**：多轮由调用方带全 `messages`。
+5. **缓存**：会话历史 + 按 surface 累积的协议消息，`GET /api/a2ui/session/:threadId` 可整段回放。
 
 **请求管线**：生成只有一个入口，分流只发生在最后一刻。
 
 ```mermaid
 flowchart TD
-    REQ["POST /api/a2ui/run"] --> IN["inbound<br/>规整入参（RunAgentInput 或 message）"]
-    IN --> PREP["prepare()<br/>取出会话 / 活跃 surface / history"]
+    REQ["POST /api/a2ui/run"] --> IN["inbound<br/>规整入参（RunAgentInput / message / scenario）"]
+    IN --> PREP["prepare()<br/>命中场景则改用 fixture 的 surfaceId"]
     PREP --> Q{"query.stream"}
     Q -->|"缺省 / true"| SSER["runA2UIStream<br/>AG-UI 事件 → encodeSse"]
-    Q -->|"false / 0 / no / off / json"| JRES["agent.generate()<br/>一次性 JSON"]
-    SSER --> COMMIT["commit()<br/>写 history + surface 缓存"]
-    JRES --> COMMIT
+    Q -->|"false / 0 / no / off / json"| JRES["一次性 JSON"]
+    SSER --> AGENT2["agent 门面<br/>带 scenario → fixture；否则 → 配置的 provider"]
+    JRES --> AGENT2
+    AGENT2 --> COMMIT["commit()<br/>写 history + surface 缓存（场景不切活跃 surface）"]
     COMMIT --> SNAP["GET /api/a2ui/session/:threadId<br/>整段回放"]
 ```
 
@@ -176,13 +204,26 @@ pnpm --filter a2ui-playground dev
 pnpm --filter a2ui-playground-server dev
 ```
 
-接真实模型：
+接模型（服务端 `.env` 里默认已经配好 DeepSeek 的地址与模型名，只差 Key）：
 
 ```bash
 cd server/a2ui-playground-server
-cp .env.example .env     # 填入 OPENAI_API_KEY，并把 AGENT_PROVIDER 设为 openai
+cp .env.example .env     # 填入 OPENAI_API_KEY（或 DEEPSEEK_API_KEY）
+
+# 只测模型链接：不用改 AGENT_PROVIDER，重启后直接打
+curl -N -X POST http://localhost:3000/api/a2ui/chat \
+  -H 'Content-Type: application/json' -d '{"message":"用一句话介绍你自己"}'
+
+# 让 A2UI 生成也走真实模型：把 .env 里的 AGENT_PROVIDER 改成 openai 再重启
 pnpm dev
 ```
+
+playground 里也能测：右栏标题右侧的 **「对话 / 界面」开关**，切到「对话」后发送键只打模型，
+不生成界面、不动左侧预览。
+
+> 实测（DeepSeek `deepseek-flash`）：对话逐 token 流式、首字 ~2.7s；把 `.env` 的
+> `AGENT_PROVIDER` 设为 `openai` 后，一句话能产出 3 条协议消息 / 11 个组件并在预览里渲染出来
+> （约 5.7s，抽取零丢行）。
 
 根目录常用命令：
 
