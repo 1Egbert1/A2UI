@@ -1,10 +1,9 @@
-import { h } from 'vue';
+import { h, type CSSProperties } from 'vue';
 import { readString, type ComponentRenderer } from 'a2ui-core';
 
 import { type VueNode } from '../internal/node';
+import { iconContentOf } from '../internal/icons';
 import {
-  FALLBACK_GLYPH,
-  ICON_GLYPHS,
   ICON_STYLE,
   imageStyleOf,
   tagOfText,
@@ -31,14 +30,39 @@ export const renderImage: ComponentRenderer<VueNode> = (props, context) =>
     style: imageStyleOf(props.usageHint, props.fit),
   });
 
-/** Icon：标准目录只规定图标名，这里按内置字符表渲染（见 internal/styles 的说明）。 */
+/**
+ * EP 图标组件的样式：根 `<svg>` 不自带尺寸（官方用法靠 `el-icon` 包裹才有 1em），
+ * 这里显式补上。`1em` 相对 svg 自身的 font-size（继承 ICON_STYLE 的 1.25rem），
+ * 所以改 ICON_STYLE.fontSize 就能整体缩放。
+ */
+const ICON_COMPONENT_STYLE: CSSProperties = {
+  ...ICON_STYLE,
+  width: '1em',
+  height: '1em',
+};
+
+/** Icon：Element Plus 图标库组件优先（名字规范化匹配），内置 emoji 表兜底，最后占位符。 */
 export const renderIcon: ComponentRenderer<VueNode> = (props, context) => {
   const name = readString(props.name, context.read);
-  return h(
-    'span',
-    { style: ICON_STYLE, title: name, role: 'img', 'aria-label': name },
-    ICON_GLYPHS[name] ?? FALLBACK_GLYPH,
-  );
+  const content = iconContentOf(name);
+
+  // 内置字符表：等宽 span（与旧行为一致）。
+  if (typeof content === 'string') {
+    return h(
+      'span',
+      { style: ICON_STYLE, title: name, role: 'img', 'aria-label': name },
+      content,
+    );
+  }
+
+  // Element Plus 组件：style / title / aria-label 作为 attrs 透传到根 svg
+  // （组件 inheritAttrs 默认开启；fill:currentColor 让图标跟随文字颜色）。
+  return h(content, {
+    style: ICON_COMPONENT_STYLE,
+    title: name,
+    role: 'img',
+    'aria-label': name,
+  });
 };
 
 /** Video：原生 video 元素，浏览器自带控制条。 */

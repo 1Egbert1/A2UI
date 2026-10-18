@@ -23,6 +23,7 @@ import {
   renderText,
   renderTextField,
   renderVideo,
+  withRootId,
 } from '../src/renderMap';
 import { fakeContext, renderHtml } from './support';
 
@@ -97,11 +98,31 @@ describe('A2UI Vue 组件渲染器', () => {
   });
 
   describe('Icon', () => {
-    it('should render a glyph for a known icon name', async () => {
-      const html = await renderHtml(renderIcon({ name: { literalString: 'check' } }, fakeContext()));
+    it('should render an Element Plus component for a PascalCase name', async () => {
+      const html = await renderHtml(renderIcon({ name: { literalString: 'Search' } }, fakeContext()));
 
-      assert.match(html, /✅/);
-      assert.match(html, /title="check"/);
+      // EP 图标根元素是 <svg>，尺寸由渲染器显式补上（官方用法靠 el-icon 包裹）
+      assert.match(html, /<svg/);
+      assert.match(html, /viewBox="0 0 1024 1024"/);
+      assert.match(html, /width:1em/);
+      assert.match(html, /title="Search"/);
+    });
+
+    it('should normalize snake_case / camelCase names（home_filled → HomeFilled）', async () => {
+      const html = await renderHtml(
+        renderIcon({ name: { literalString: 'home_filled' } }, fakeContext()),
+      );
+
+      assert.match(html, /<svg/);
+      assert.match(html, /title="home_filled"/);
+    });
+
+    it('should fall back to the built-in emoji table（cloud → ☁️）', async () => {
+      // 「cloud」在 EP 里没有对应导出（只有 Cloudy），回退内置字符表
+      const html = await renderHtml(renderIcon({ name: { literalString: 'cloud' } }, fakeContext()));
+
+      assert.match(html, /☁️/);
+      assert.match(html, /title="cloud"/);
     });
 
     it('should fall back to a placeholder for an unknown name', async () => {
@@ -115,7 +136,26 @@ describe('A2UI Vue 组件渲染器', () => {
 
       const html = await renderHtml(renderIcon({ name: { path: '/action' } }, context));
 
-      assert.match(html, /🔍/);
+      // 'search' 规范化后命中 EP 的 Search
+      assert.match(html, /<svg/);
+      assert.match(html, /title="search"/);
+    });
+
+    it('should render Material snake_case names（如 flight_takeoff）', async () => {
+      // EP 没有飞机图标，回退内置字符表（老名字不因换库变 ▢）
+      const html = await renderHtml(
+        renderIcon({ name: { literalString: 'flight_takeoff' } }, fakeContext()),
+      );
+
+      assert.match(html, /🛫/);
+    });
+
+    it('snake_case 名字应能命中驼峰键（规范化，如 location_on → locationOn）', async () => {
+      const html = await renderHtml(
+        renderIcon({ name: { literalString: 'location_on' } }, fakeContext()),
+      );
+
+      assert.match(html, /📍/);
     });
   });
 
@@ -637,6 +677,100 @@ describe('A2UI Vue 组件渲染器', () => {
       );
 
       assert.match(html, /value="3"/);
+    });
+  });
+
+  describe('组件级 styles 扩展（withRootId 合入根元素）', () => {
+    it('把 styles 合进根元素：数字补 px，组件默认样式保留', async () => {
+      const html = await renderHtml(
+        withRootId(renderText)(
+          {
+            text: { literalString: 'Hi' },
+            usageHint: 'h2',
+            styles: { color: '#ef4444', fontSize: 18, fontWeight: 600 },
+          },
+          fakeContext(),
+        ),
+      );
+
+      // usageHint 推导的默认样式（h2 有 line-height）仍在，只有同名属性被覆盖
+      assert.match(html, /color:\s*#ef4444/);
+      assert.match(html, /font-size:\s*18px/);
+      assert.match(html, /font-weight:\s*600/);
+      assert.match(html, /line-height/, '组件默认样式应保留');
+    });
+
+    it('kebab-case / snake_case 键名会被归一（font-size → fontSize）', async () => {
+      const html = await renderHtml(
+        withRootId(renderText)(
+          {
+            text: { literalString: 'Hi' },
+            styles: { 'font-size': '22px', text_align: 'center', 'background-color': '#fef3c7' },
+          },
+          fakeContext(),
+        ),
+      );
+
+      assert.match(html, /font-size:\s*22px/);
+      assert.match(html, /text-align:\s*center/);
+      assert.match(html, /background-color:\s*#fef3c7/);
+    });
+
+    it('白名单外的属性被忽略（display / position 不进 DOM）', async () => {
+      const html = await renderHtml(
+        withRootId(renderText)(
+          {
+            text: { literalString: 'Hi' },
+            styles: { display: 'none', position: 'fixed', zIndex: 99, color: 'red' },
+          },
+          fakeContext(),
+        ),
+      );
+
+      assert.match(html, /color:\s*red/);
+      assert.doesNotMatch(html, /display:\s*none/);
+      assert.doesNotMatch(html, /position:\s*fixed/);
+      assert.doesNotMatch(html, /z-index/);
+    });
+
+    it('无单位属性保持数字（opacity 不加 px）', async () => {
+      const html = await renderHtml(
+        withRootId(renderText)(
+          { text: { literalString: 'Hi' }, styles: { opacity: 0.5 } },
+          fakeContext(),
+        ),
+      );
+
+      assert.match(html, /opacity:\s*0\.5/);
+      assert.doesNotMatch(html, /opacity:\s*0\.5px/);
+    });
+
+    it('组件 vnode（Tabs）也能通过属性透传拿到 styles', async () => {
+      const html = await renderHtml(
+        withRootId(renderTabs)(
+          {
+            tabItems: [{ title: { literalString: 'First' }, child: 'a' }],
+            styles: { borderColor: '#93c5fd', borderRadius: 12 },
+          },
+          fakeContext({ nodes: CHILDREN }),
+        ),
+      );
+
+      assert.match(html, /border-color:\s*#93c5fd/);
+      assert.match(html, /border-radius:\s*12px/);
+    });
+
+    it('非法 / 空 styles 不报错、不改变输出', async () => {
+      const base = await renderHtml(
+        withRootId(renderText)({ text: { literalString: 'Hi' } }, fakeContext()),
+      );
+
+      for (const styles of [undefined, null, 'nope', [], {}, { color: '' }, { color: 123 }]) {
+        const html = await renderHtml(
+          withRootId(renderText)({ text: { literalString: 'Hi' }, styles }, fakeContext()),
+        );
+        assert.equal(html, base, `styles=${JSON.stringify(styles)} 不该改变输出`);
+      }
     });
   });
 });

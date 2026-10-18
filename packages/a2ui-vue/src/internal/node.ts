@@ -1,5 +1,6 @@
 import { cloneVNode, defineComponent, h, isVNode, type PropType, type VNode, type VNodeChild } from 'vue';
 import type { ComponentRenderer } from 'a2ui-core';
+import { stylesOf } from './styles';
 
 /** 渲染结果类型：允许为空 —— 属性不完整或数据缺失时，确实渲染不出东西。 */
 export type VueNode = VNode | null;
@@ -48,11 +49,17 @@ export const childOf = (resolve: (componentId: string) => unknown, componentId: 
 export const nodeOf = (resolve: () => unknown) => h(A2UINode, { resolve });
 
 /**
- * 给渲染结果的**根元素**补上组件 id。
+ * 给渲染结果的**根元素**补上组件 id，并合入组件级 `styles` 扩展。
  *
- * 为什么要包一层而不是在每个渲染器里手写：id 不属于任何组件的协议属性
- * （standard_catalog_definition.json 里没有组件声明 `id`），逐组件写 18 遍既重复又
+ * 为什么要包一层而不是在每个渲染器里手写：id / styles 都不属于任何组件的协议属性
+ * （`standard_catalog_definition.json` 里没有组件声明它们），逐组件写 18 遍既重复又
  * 容易漏；`ComponentRenderer` 是统一契约，在这里收口最稳。
+ *
+ * 关于 `styles`：官方 v0.8 只在 surface 级定义 styles，组件级是本项目的受控扩展
+ * （白名单见 `internal/styles.ts` 的 `STYLE_RULES`，说明见
+ * `docs/a2ui-styles-extension.md`）。`cloneVNode` 内部走 `mergeProps`，对 `style`
+ * 是**合并**而非替换 —— 组件自身由 usageHint 等推导出的默认样式仍然保留，
+ * 只有同名属性被覆盖。
  *
  * 为什么带 surfaceId 前缀：componentId 只在**单个 surface 内**唯一，多个 surface
  * 各自都有 `root` 是常态，裸 componentId 当 id 必撞。
@@ -73,10 +80,10 @@ export const nodeOf = (resolve: () => unknown) => h(A2UINode, { resolve });
  * 要彻底消除得让子节点 id 带上「从根到它的路径」（需要改 `childOf` 的契约），本轮没做。
  *
  * 落在哪个元素上：
- * - 渲染器返回**元素 vnode**（大多数组件）时，`cloneVNode` 直接把 `id` 合进该元素；
- * - 返回**组件 vnode**（Tabs / Modal / MultipleChoice 这类有状态组件）时，`id` 会作为
+ * - 渲染器返回**元素 vnode**（大多数组件）时，`cloneVNode` 直接把 `id` / `style` 合进该元素；
+ * - 返回**组件 vnode**（Tabs / Modal / MultipleChoice 这类有状态组件）时，二者作为
  *   透传属性落到该组件唯一的根元素上（Vue 的单根属性透传）；
- * - 返回 `null`（渲染不出东西）时保持 `null` —— 没有根元素，也就没有 id 可挂。
+ * - 返回 `null`（渲染不出东西）时保持 `null` —— 没有根元素，也就没有 id / 样式可挂。
  */
 export const withRootId = (renderer: ComponentRenderer<VueNode>): ComponentRenderer<VueNode> =>
   (props, context) => {
@@ -87,7 +94,9 @@ export const withRootId = (renderer: ComponentRenderer<VueNode>): ComponentRende
     const id = context.itemKey
       ? `${context.surfaceId}-${context.componentId}-${context.itemKey}`
       : `${context.surfaceId}-${context.componentId}`;
-    return cloneVNode(node, { id });
+    // 没写 styles（或全是白名单外的键）时保持原样，不多挂一个空 style。
+    const styles = stylesOf(props.styles);
+    return styles === undefined ? cloneVNode(node, { id }) : cloneVNode(node, { id, style: styles });
   };
 
 /**
