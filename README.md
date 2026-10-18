@@ -12,17 +12,13 @@
 **一句话 + 一张参考图 → A2UI 协议 → 端上流式渲染。** 下图是一次真实生成：给 agent 一张天气卡片的设计稿，
 它把版式复刻成 A2UI 协议（9 条协议消息、31.8 秒，含 1.3 万字符的思考过程）。
 
-<p align="center">
-  <img src="docs/assets/example-weather-source.png" width="340" alt="输入参考图：天气卡片" />
-</p>
+**① 输入：一张参考图（多模态上传）**
 
-<p align="center"><sub>① 输入：一张参考图（多模态上传）</sub></p>
+![输入参考图：天气卡片](docs/assets/example-weather-source.png)
 
-<p align="center">
-  <img src="docs/assets/playground-overview.png" width="860" alt="A2UI Playground 生成结果" />
-</p>
+**② 输出：Playground 三块 —— 左上预览逐块长出、左下数据模型绑定（path 实时解析）、右侧对话（协议消息与耗时）**
 
-<p align="center"><sub>② 输出：Playground 三块 —— 左上预览逐块长出、左下数据模型绑定（path 实时解析）、右侧对话（协议消息与耗时）</sub></p>
+![A2UI Playground 生成结果](docs/assets/playground-overview.png)
 
 ## 项目架构
 
