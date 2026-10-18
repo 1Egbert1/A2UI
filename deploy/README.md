@@ -67,19 +67,22 @@ sudo bash /opt/a2ui/deploy/deploy.sh
 一条命令，两种模式，按手里有什么选（脚本见 `deploy/setup-tls.sh`，模板见 `deploy/nginx.tls.conf`）：
 
 ```bash
-# A. 有已备案域名（推荐）
-sudo bash /opt/a2ui/deploy/setup-tls.sh --domain a2ui.example.com --email me@example.com
+# A. 有域名（推荐）——主域 + www 放一张证书里
+sudo bash /opt/a2ui/deploy/setup-tls.sh --domain yakult.work,www.yakult.work --email me@example.com
 
 # B. 只有公网 IP（无域名 / 域名没备案）
 sudo bash /opt/a2ui/deploy/setup-tls.sh --ip 82.156.76.114
 
 # 防火墙还没放通 443 时先只签证书，站点继续走 80
-sudo bash /opt/a2ui/deploy/setup-tls.sh --ip 82.156.76.114 --soft
+sudo bash /opt/a2ui/deploy/setup-tls.sh --domain yakult.work --soft
 ```
 
 脚本做四件事：`certbot` 签证书（webroot，不停服务）→ 渲染 `nginx.tls.conf`（80 只留 ACME 校验
 + 跳转、站点搬进 443）→ 自检 → 配好自动续期。**不会覆盖 `deploy/nginx.conf`**，
 `bootstrap.sh` 重跑也只会写回 HTTP 版，TLS 版由这个脚本独占。
+
+域名模式下 80 的 301 用的是**固定主域**（`__CANONICAL__`），所以 `http://<IP>/` 也会被并到
+`https://<主域>/`，不会出现「拿域名证书访问 IP 地址」的证书告警。
 
 ### 境内服务器 + 没备案域名的坑（务必先看）
 
@@ -92,22 +95,31 @@ $ curl -sv -H "Host: 82-156-76-114.sslip.io" http://82.156.76.114/
 < Location: https://dnspod.qcloud.com/static/webblock.html?d=82-156-76-114.sslip.io
 ```
 
+对比同一台机器上的实测（`yakult.work` 正常返回站点，临时域名被拦）：
+
+| Host | 结果 |
+| --- | --- |
+| `yakult.work` | `200`，直接是本机 nginx |
+| `82-156-76-114.sslip.io` | `302` → dnspod webblock 页 |
+| `82.156.76.114`（裸 IP） | `200`，不受影响 |
+
 后果是：**Let's Encrypt 的 HTTP-01 校验请求也会被拦到那个页面上**，所以临时域名方案
 （`sslip.io` / `nip.io` 之类）在境内机器上签不出证书，必然报
 `Invalid response from https://dnspod.qcloud.com/static/webblock.html?...`。
+判断办法很简单：`curl -sI -H "Host: <域名>" http://<IP>/`，看是不是 302 到 webblock。
 
-裸 IP 访问不受这条限制，而 Let's Encrypt 已经能签 **IP 证书**，所以没有备案域名时，
-`--ip` 模式就是对 IP 签一张——这也是唯一能拿到「浏览器不报警」的证书的路子。
+裸 IP 访问不受这条限制，而 Let's Encrypt 已经能签 **IP 证书**，所以既没域名也没备案时，
+`--ip` 模式就是对 IP 签一张——这是唯一能拿到「浏览器不报警」的证书的路子。
 
-两个约束要注意：
+IP 证书有两个约束：
 
 - **IP 证书是 shortlived profile，只有 7 天有效期**。续期靠 `certbot.timer`，
   并且必须用 certbot >= 5（`--ip-address` + `--required-profile` 才支持 IP）。
   apt 源里的 2.9 不支持，所以脚本会在 `/opt/certbot-venv` 装一份独立的新版，
   同时把 `certbot.service` 的 `ExecStart` 覆盖成 venv 里的二进制，并删掉 apt 的
   `/etc/cron.d/certbot`（否则它每天用旧版跑一次、报错刷日志）。
-- **IP 证书换不了证书链信任度**：`https://82.156.76.114` 在浏览器里是合法的绿锁，
-  但换个 IP 就作废；要长期用还是得备好域名。
+- **IP 证书绑死 IP**：换个 IP 就作废。所以一旦有了域名，就改用 `--domain` 重签
+  （域名证书 90 天，续期负担小得多）。
 
 ### 443 必须放通
 
@@ -115,8 +127,15 @@ $ curl -sv -H "Host: 82-156-76-114.sslip.io" http://82.156.76.114/
 Lighthouse 的防火墙在实例外面。上线后立刻从外部验一次：
 
 ```bash
-curl -sS -o /dev/null -w '%{http_code}\n' https://82.156.76.114/
+curl -sS -o /dev/null -w '%{http_code}\n' https://yakult.work/
 ```
+
+判断端口到底是「被防火墙丢了」还是「没程序监听」，用 TCP 探一下就有结论：
+
+| 现象 | 含义 |
+| --- | --- |
+| 连接超时 （丢包） | 防火墙没放通 |
+| 立即 `Connection refused`（RST） | 防火墙已放通，只是 nginx 没监听 443 |
 
 超时就到 **Lighthouse 控制台 → 防火墙 → 放通 TCP:443**（80 要留着，ACME 续期走 80）。
 从放通到生效前，站点会因为 80 已跳转而打不开，先回滚：
@@ -129,7 +148,7 @@ sudo nginx -t && sudo systemctl reload nginx
 ### 续期检查
 
 ```bash
-/opt/certbot-venv/bin/certbot renew --dry-run   # IP 模式
+/opt/certbot-venv/bin/certbot renew --dry-run   # 域名/IP 两种证书都归它管
 systemctl list-timers certbot.timer
 ```
 
@@ -140,6 +159,7 @@ systemctl list-timers certbot.timer
 
 | 现象 | 排查 |
 |---|---|
+| **域名 http 能开、https 打不开** | 按顺序查三件：① `sudo ss -lntp \| grep :443` 有没有 nginx；② TCP 探 443 是超时还是 RST（见上表）；③ `openssl x509 -in /etc/letsencrypt/live/<域名>/fullchain.pem -noout -enddate` 证书在不在。三样都对还打不开，才看浏览器报的错 |
 | 打开是 502 | `pm2 logs a2ui-server`；确认 `dist/index.js` 存在、`.env` 可读 |
 | **`/api` 返回 404 且响应头是 `Server: Caddy`** | **80 被镜像预装的 Caddy 占了**，nginx 根本没起来（`systemctl status nginx` 会显示 `bind() 98: Address already in use`）。`sudo systemctl disable --now caddy && sudo systemctl start nginx`。恢复 Caddy：`sudo systemctl enable --now caddy` |
 | 页面能开但生成无反应 | 浏览器 Network 看 `/api/a2ui/run`：应为 **SSE**（`text/event-stream`）。若一直 pending 后断开，检查 nginx 是否漏了 `proxy_buffering off` |

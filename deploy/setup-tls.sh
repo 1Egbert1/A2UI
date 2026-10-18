@@ -3,6 +3,7 @@
 # 给 A2UI 站点上 HTTPS。两种模式，按你手里有什么选：
 #
 #   有已备案域名：  sudo bash deploy/setup-tls.sh --domain a2ui.example.com --email me@example.com
+#   主域 + www：    sudo bash deploy/setup-tls.sh --domain example.com,www.example.com
 #   只有公网 IP：   sudo bash deploy/setup-tls.sh --ip 82.156.76.114
 #
 # 两种都会：申请证书 → 装 deploy/nginx.tls.conf（80 跳转 + 443 站点）→ 自检 → 配好自动续期。
@@ -35,10 +36,13 @@ fail() { printf '\033[1;31m[x] %s\033[0m\n' "$*" >&2; exit 1; }
 usage() { sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 1; }
 
 # ---------- 0. 参数 ----------
+# --domain 支持逗号分隔多个名字（只签一张多 SAN 证书）：
+#   --domain yakult.work,www.yakult.work
+DOMAINS=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    --domain) MODE=domain; TARGET="${2:-}"; SERVER_NAME="${2:-}"; shift 2 ;;
-    --ip)     MODE=ip;     TARGET="${2:-}"; SERVER_NAME="_";        shift 2 ;;
+    --domain) MODE=domain; TARGET="${2:-}"; shift 2 ;;
+    --ip)     MODE=ip;     TARGET="${2:-}"; shift 2 ;;
     --email)  EMAIL="${2:-}"; shift 2 ;;
     --soft)   SOFT=1; shift ;;
     -h|--help) usage ;;
@@ -48,6 +52,22 @@ done
 
 [ -n "$MODE" ] || usage
 [ "$(id -u)" -eq 0 ] || fail "要用 root 跑（sudo）"
+
+if [ "$MODE" = "domain" ]; then
+  IFS=',' read -r -a _raw <<<"$TARGET"
+  for d in "${_raw[@]}"; do
+    d="${d// /}"                      # 去掉逗号后的空格
+    [ -n "$d" ] && DOMAINS+=(-d "$d")
+  done
+  [ "${#DOMAINS[@]}" -gt 0 ] || fail "--domain 后面要跟域名"
+  TARGET="${_raw[0]// /}"             # 证书目录用第一个名字
+  SERVER_NAME="$TARGET"
+  CANONICAL="$TARGET"                 # 80 的 301 一律并到这个域名（IP 访问也跳过来）
+else
+  SERVER_NAME="_"
+  CANONICAL='$host'
+fi
+
 [ -f "$TEMPLATE" ] || fail "缺少模板：$TEMPLATE"
 [ -d "$WEB_ROOT" ] || fail "静态目录不存在：$WEB_ROOT（先跑 deploy/deploy.sh）"
 
@@ -99,7 +119,7 @@ else
   if [ "$MODE" = "ip" ]; then
     "$CERTBOT" certonly "${common[@]}" --ip-address "$TARGET" --required-profile shortlived
   else
-    "$CERTBOT" certonly "${common[@]}" -d "$TARGET" --cert-name "$TARGET"
+    "$CERTBOT" certonly "${common[@]}" "${DOMAINS[@]}" --cert-name "$TARGET"
   fi
 fi
 
@@ -116,6 +136,7 @@ install_tls_config() {
   local tmp
   tmp="$(mktemp)"
   sed -e "s|__SERVER_NAME__|$SERVER_NAME|g" \
+      -e "s|__CANONICAL__|$CANONICAL|g" \
       -e "s|__SSL_CERT__|$CERT_DIR/fullchain.pem|g" \
       -e "s|__SSL_KEY__|$CERT_DIR/privkey.pem|g" \
       "$TEMPLATE" >"$tmp"
