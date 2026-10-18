@@ -7,6 +7,23 @@
 实现一个 A2UI 项目：用户通过 Web 应用与 agent 对话，服务端把自然语言输入转成 A2UI 协议消息，
 前端逐条接收并流式渲染出可交互的界面。
 
+## 效果展示
+
+**一句话 + 一张参考图 → A2UI 协议 → 端上流式渲染。** 下图是一次真实生成：给 agent 一张天气卡片的设计稿，
+它把版式复刻成 A2UI 协议（9 条协议消息、31.8 秒，含 1.3 万字符的思考过程）。
+
+<p align="center">
+  <img src="docs/assets/example-weather-source.png" width="340" alt="输入参考图：天气卡片" />
+</p>
+
+<p align="center"><sub>① 输入：一张参考图（多模态上传）</sub></p>
+
+<p align="center">
+  <img src="docs/assets/playground-overview.png" width="860" alt="A2UI Playground 生成结果" />
+</p>
+
+<p align="center"><sub>② 输出：Playground 三块 —— 左上预览逐块长出、左下数据模型绑定（path 实时解析）、右侧对话（协议消息与耗时）</sub></p>
+
 ## 项目架构
 
 monorepo（pnpm workspace）组织代码，分三层：
