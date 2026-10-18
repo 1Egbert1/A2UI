@@ -104,14 +104,23 @@ else
 fi
 
 say "部署完成"
+
+# 已签发证书的机器上（deploy/setup-tls.sh 跑过）公网入口是 https，80 只做跳转。
+SCHEME=http
+if compgen -G "/etc/letsencrypt/live/*/fullchain.pem" >/dev/null 2>&1; then
+  SCHEME=https
+fi
+PUBLIC_IP="$(curl -fsS --max-time 3 https://api.ipify.org 2>/dev/null || echo '<公网IP>')"
+
 cat <<TIP
 
 访问：
-  http://$(curl -fsS --max-time 3 https://api.ipify.org 2>/dev/null || echo '<公网IP>')/
+  $SCHEME://$PUBLIC_IP/
 
 常用命令：
   pm2 logs $PM2_NAME          # 看日志
   pm2 restart $PM2_NAME       # 重启
   systemctl reload nginx      # 改了 nginx 配置后
+  bash $REPO_DIR/deploy/setup-tls.sh --ip $PUBLIC_IP   # 签发 / 切换 HTTPS
 
 TIP

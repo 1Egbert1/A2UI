@@ -3,10 +3,10 @@
 ## 拓扑
 
 ```
-Internet :80
+Internet :80 / :443
    │
    ▼
- nginx（静态 + 反代）
+ nginx（静态 + 反代；上了 TLS 后 80 只留 ACME 校验并 301 到 443）
    ├─ /                → /var/www/a2ui           （playground 的 vite 产物）
    └─ /api/            → 127.0.0.1:3000          （Node，pm2 守护）
                             └─ 读同目录 .env（模型 Key 只存在服务器上）
@@ -64,13 +64,77 @@ sudo bash /opt/a2ui/deploy/deploy.sh
 
 ## 可选：上 HTTPS
 
+一条命令，两种模式，按手里有什么选（脚本见 `deploy/setup-tls.sh`，模板见 `deploy/nginx.tls.conf`）：
+
 ```bash
-sudo apt install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d your-domain.com
+# A. 有已备案域名（推荐）
+sudo bash /opt/a2ui/deploy/setup-tls.sh --domain a2ui.example.com --email me@example.com
+
+# B. 只有公网 IP（无域名 / 域名没备案）
+sudo bash /opt/a2ui/deploy/setup-tls.sh --ip 82.156.76.114
+
+# 防火墙还没放通 443 时先只签证书，站点继续走 80
+sudo bash /opt/a2ui/deploy/setup-tls.sh --ip 82.156.76.114 --soft
 ```
 
-证书自动续期由 certbot 的 systemd timer 负责。**注意**：`deploy/nginx.conf` 里的 `server_name _`
-需要改成你的域名，否则 certbot 认不出站点。
+脚本做四件事：`certbot` 签证书（webroot，不停服务）→ 渲染 `nginx.tls.conf`（80 只留 ACME 校验
++ 跳转、站点搬进 443）→ 自检 → 配好自动续期。**不会覆盖 `deploy/nginx.conf`**，
+`bootstrap.sh` 重跑也只会写回 HTTP 版，TLS 版由这个脚本独占。
+
+### 境内服务器 + 没备案域名的坑（务必先看）
+
+境内实例对**未备案域名**的请求会在网关层被拦掉：任何 HTTP 请求只要 `Host` 是没备案的域名，
+都会被 `302` 到 `https://dnspod.qcloud.com/static/webblock.html?d=<域名>`。
+
+```
+$ curl -sv -H "Host: 82-156-76-114.sslip.io" http://82.156.76.114/
+< HTTP/1.1 302 OK
+< Location: https://dnspod.qcloud.com/static/webblock.html?d=82-156-76-114.sslip.io
+```
+
+后果是：**Let's Encrypt 的 HTTP-01 校验请求也会被拦到那个页面上**，所以临时域名方案
+（`sslip.io` / `nip.io` 之类）在境内机器上签不出证书，必然报
+`Invalid response from https://dnspod.qcloud.com/static/webblock.html?...`。
+
+裸 IP 访问不受这条限制，而 Let's Encrypt 已经能签 **IP 证书**，所以没有备案域名时，
+`--ip` 模式就是对 IP 签一张——这也是唯一能拿到「浏览器不报警」的证书的路子。
+
+两个约束要注意：
+
+- **IP 证书是 shortlived profile，只有 7 天有效期**。续期靠 `certbot.timer`，
+  并且必须用 certbot >= 5（`--ip-address` + `--required-profile` 才支持 IP）。
+  apt 源里的 2.9 不支持，所以脚本会在 `/opt/certbot-venv` 装一份独立的新版，
+  同时把 `certbot.service` 的 `ExecStart` 覆盖成 venv 里的二进制，并删掉 apt 的
+  `/etc/cron.d/certbot`（否则它每天用旧版跑一次、报错刷日志）。
+- **IP 证书换不了证书链信任度**：`https://82.156.76.114` 在浏览器里是合法的绿锁，
+  但换个 IP 就作废；要长期用还是得备好域名。
+
+### 443 必须放通
+
+`setup-tls.sh` 的自检是在**实例内部**打的 `127.0.0.1:443`，通了不代表公网通——
+Lighthouse 的防火墙在实例外面。上线后立刻从外部验一次：
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' https://82.156.76.114/
+```
+
+超时就到 **Lighthouse 控制台 → 防火墙 → 放通 TCP:443**（80 要留着，ACME 续期走 80）。
+从放通到生效前，站点会因为 80 已跳转而打不开，先回滚：
+
+```bash
+sudo cp /etc/nginx/sites-available/a2ui.http.bak /etc/nginx/sites-available/a2ui
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+### 续期检查
+
+```bash
+/opt/certbot-venv/bin/certbot renew --dry-run   # IP 模式
+systemctl list-timers certbot.timer
+```
+
+`certbot.service` 带了 `--deploy-hook "systemctl reload nginx"`，续期成功会自动 reload，
+不需要手动重启。
 
 ## 排障
 

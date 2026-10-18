@@ -20,6 +20,31 @@
 
 ![A2UI Playground 生成结果](docs/assets/playground-overview.png)
 
+## 在线体验
+
+**http://82.156.76.114/** —— 腾讯云 Lighthouse（Ubuntu 24.04，2C2G），跑的是真实模型
+（DeepSeek `deepseek-flash`），不是 mock。打开就是 playground，左栏输入一句话即可生成。
+
+| 项 | 值 |
+| --- | --- |
+| 地址 | http://82.156.76.114/ （HTTPS 已签发 IP 证书，放通 443 后 80 会自动 301 过去） |
+| 形态 | nginx 静态站 + `/api` 反代 → Node 服务（pm2 守护），前后端同域 |
+| 模型 | `AGENT_PROVIDER=openai`，Key 只在服务器 `.env`（权限 600，不进仓库） |
+| 自检 | `curl http://82.156.76.114/api/a2ui/scenarios`（返回 200 即前后端都通） |
+
+运维命令（`sudo` 执行）：
+
+```bash
+sudo bash /opt/a2ui/deploy/deploy.sh   # 更新代码并重新发布：拉码 → 装依赖 → 构建 → 发布 → 重启 → 自检
+sudo pm2 logs a2ui-server              # 看日志
+sudo pm2 restart a2ui-server           # 只重启服务
+sudo systemctl reload nginx            # 改过 nginx 配置后
+sudo bash /opt/a2ui/deploy/setup-tls.sh --ip 82.156.76.114   # 签发/切换 HTTPS
+```
+
+完整部署步骤、HTTPS（含「境内服务器 + 未备案域名会被网关拦截」这个坑）与排障表见
+[`deploy/README.md`](./deploy/README.md)。
+
 ## 项目架构
 
 monorepo（pnpm workspace）组织代码，分三层：
