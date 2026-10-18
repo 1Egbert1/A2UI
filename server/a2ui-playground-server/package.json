@@ -7,11 +7,14 @@
   "scripts": {
     "dev": "ts-node src/index.ts",
     "start": "ts-node src/index.ts",
+    "icons-mcp": "ts-node src/bin/icons-mcp.ts",
     "build": "tsc",
     "test": "mocha",
     "test:types": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
+    "@element-plus/icons-vue": "^2.3.2",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "a2ui-core": "workspace:*",
     "koa": "^2.15.3",
     "koa-bodyparser": "^4.4.1",
