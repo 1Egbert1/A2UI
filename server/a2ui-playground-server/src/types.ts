@@ -231,6 +231,26 @@ export interface ModelDelta {
   reasoning?: string;
 }
 
+/**
+ * 交给模型的**工具定义**（OpenAI tools 的 function 形状，与 MCP 的 inputSchema 同构）。
+ *
+ * 刻意不放清单类数据（比如全部图标名）进 system prompt：那会让不涉及图标的请求也背上
+ * 几千 token。工具定义本身很小，模型需要时**自己调**，按需取用。
+ */
+export interface AgentToolDef {
+  name: string;
+  description: string;
+  /** JSON Schema（MCP `inputSchema` 与 OpenAI `parameters` 是同一个东西）。 */
+  inputSchema: Record<string, unknown>;
+}
+
+/** 工具执行器：定义（给模型看）与执行（真去查）打包在一起，通常由 MCP 客户端提供。 */
+export interface ToolExecutor {
+  readonly definitions: AgentToolDef[];
+  /** 执行一次调用，返回给模型的文本结果。失败时返回错误文本而不是抛出——模型要能读。 */
+  execute(name: string, args: unknown): Promise<string>;
+}
+
 /** 流式路径上 agent 吐出的单个片段：文字增量、思考增量、坏行告警，或一条已抽好的协议消息。 */
 export interface AgentStreamChunk {
   /** 模型原始文本增量（**不含思考内容**）。 */

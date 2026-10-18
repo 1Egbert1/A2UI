@@ -28,6 +28,8 @@ export const makeConfig = (overrides: Partial<ServerConfig> = {}): ServerConfig 
   mockStreamDelayMs: 0,
   scenarioChunkSize: 50,
   chatSystemPrompt: '你是一个乐于助人的中文助手。',
+  // 测试默认挂上图标工具（与生产缺省一致）；要验「关掉」的 spec 显式传 false。
+  iconTools: true,
   ...overrides,
 });
 

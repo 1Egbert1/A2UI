@@ -46,6 +46,13 @@ export interface ServerConfig {
   scenarioChunkSize: number;
   /** `POST /api/a2ui/chat` 的默认 system prompt（请求体给了 `system` 就用请求体的）。 */
   chatSystemPrompt: string;
+  /**
+   * 是否给 A2UI 生成路径挂**图标 MCP 工具**（模型按需查询 Element Plus 图标名）。
+   *
+   * 默认开。关掉的理由只有一个：压测「纯提示词」效果时不想让模型有外查能力。
+   * 关掉不影响任何协议行为，只是模型拿不到真实图标名，按 prompt 指引自行发挥。
+   */
+  iconTools: boolean;
 }
 
 const DEFAULTS = {
@@ -137,4 +144,6 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): ServerConfig =
   mockStreamDelayMs: readInt(env.MOCK_STREAM_DELAY_MS, DEFAULTS.mockStreamDelayMs),
   scenarioChunkSize: readInt(env.SCENARIO_CHUNK_SIZE, DEFAULTS.scenarioChunkSize),
   chatSystemPrompt: env.CHAT_SYSTEM_PROMPT?.trim() || DEFAULTS.chatSystemPrompt,
+  // 只认显式关闭：`0` / `false` / `off` 三种写法都算关，其余（含缺省）为开。
+  iconTools: !['0', 'false', 'off'].includes((env.AGENT_ICON_TOOLS ?? '').trim().toLowerCase()),
 });

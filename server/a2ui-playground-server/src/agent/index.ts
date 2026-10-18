@@ -98,7 +98,7 @@ export const createA2UIAgent = (config: ServerConfig): A2UIAgent => {
 
   const implementation: AgentImplementation =
     config.agentProvider === 'openai'
-      ? createOpenAIAgent(config.openai)
+      ? createOpenAIAgent(config.openai, { iconTools: config.iconTools })
       : createMockAgent({ delayMs: config.mockStreamDelayMs });
 
   /**
