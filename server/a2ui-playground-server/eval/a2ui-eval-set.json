@@ -1,0 +1,1259 @@
+{
+  "name": "a2ui-eval-set",
+  "version": "1.0.0",
+  "description": "A2UI agent 评测集：自然语言（可附图片）→ A2UI v0.8 JSONL 协议 → 端上渲染。每条用例给出 userPrompt 与可机检断言，按「基础 → 复杂业务场景 → 进阶/对抗」分层。",
+  "target": {
+    "endpoint": "POST /api/a2ui/run",
+    "notes": "默认流式 SSE（收集 data: 帧）；也可 ?stream=false 收 JSON。多轮用例（T22）用同一 threadId 续跑；多模态用例（T23）在请求体带 images:[{dataUrl}]。断言均基于服务端实际下发的 a2ui.message / a2ui.warning 事件与模型原始输出。"
+  },
+  "assertionFields": {
+    "messageTypes": "本轮必须出现的消息类型（顶层键，子集匹配）",
+    "excludeMessageTypes": "本轮不得出现的消息类型",
+    "lastMessage": "最后一条消息的类型。仅在语义上可保证时使用（如 T21 的 deleteSurface 收尾）；分块流式规约下 beginRendering 在 root 就绪后即发出，不再是最后一条，故不作此断言",
+    "components": "必须出现的组件名（任一路 surfaceUpdate 中命中即可）",
+    "texts": "必须出现的文案（literalString 或数据模型 valueString 中子串命中）",
+    "paths": "必须出现的数据路径（组件 path 值或数据模型 key 路径，子串命中）",
+    "actionNames": "必须出现的动作名",
+    "localAction": "true = 至少一个 action 带 type:local",
+    "sameSurfaceId": "true = 本轮 surfaceId 与上一轮一致（增量轮校验）",
+    "rawNotContains": "模型原始输出（TEXT_MESSAGE_CONTENT 拼接）不得包含的串",
+    "minRawChars": "模型原始输出最小长度",
+    "noWarnings": "true = 不得出现任何 a2ui.warning（坏行与自动修复都算失败）"
+  },
+  "summary": {
+    "total": 26,
+    "byCategory": {
+      "basic": 10,
+      "business": 10,
+      "advanced": 5,
+      "adversarial": 1
+    },
+    "componentCoverage": [
+      "Text",
+      "Image",
+      "Icon",
+      "Video",
+      "AudioPlayer",
+      "Divider",
+      "Row",
+      "Column",
+      "List",
+      "Card",
+      "Tabs",
+      "Modal",
+      "Button",
+      "CheckBox",
+      "TextField",
+      "DateTimeInput",
+      "MultipleChoice",
+      "Slider"
+    ],
+    "featureCoverage": [
+      "消息顺序与 beginRendering 收尾",
+      "单顶层键",
+      "surfaceId 一致性",
+      "literalString",
+      "literalNumber",
+      "literalBoolean",
+      "path 绑定",
+      "valueMap 对象 map（无数组）",
+      "List + template 与 item 占位路径",
+      "服务端动作 context 回传",
+      "本地动作单操作",
+      "本地动作多操作（场景批量置值）",
+      "deleteSurface",
+      "多轮增量修改",
+      "多模态图片复刻",
+      "输出格式对抗",
+      "空数据空状态",
+      "长输出压力",
+      "分块流式输出（多条 surfaceUpdate + 提前 beginRendering）"
+    ]
+  },
+  "tests": [
+    {
+      "id": "T01",
+      "name": "纯文本欢迎卡",
+      "category": "basic",
+      "tags": [
+        "Text",
+        "literalString",
+        "surfaceUpdate",
+        "beginRendering"
+      ],
+      "userPrompt": "显示一个欢迎卡片：一行大标题「欢迎使用 A2UI」，下面一行小字「由协议驱动的界面」。",
+      "assert": {
+        "messageTypes": [
+          "surfaceUpdate",
+          "beginRendering"
+        ],
+        "components": [
+          "Text"
+        ],
+        "texts": [
+          "欢迎使用 A2UI",
+          "由协议驱动的界面"
+        ],
+        "noWarnings": true
+      },
+      "notes": "最小闭环：只考消息顺序（beginRendering 必须最后一条）与 literalString。"
+    },
+    {
+      "id": "T02",
+      "name": "文章排版（标题层级）",
+      "category": "basic",
+      "tags": [
+        "Text",
+        "Column",
+        "usageHint",
+        "literalString"
+      ],
+      "userPrompt": "用 Text 组件排一篇简短文章：一级标题「城市漫步指南」；二级标题「路线推荐」；两段正文（body）；末尾一行注释（caption）「数据仅供参考」。",
+      "assert": {
+        "messageTypes": [
+          "surfaceUpdate",
+          "beginRendering"
+        ],
+        "components": [
+          "Column",
+          "Text"
+        ],
+        "texts": [
+          "城市漫步指南",
+          "路线推荐",
+          "数据仅供参考"
+        ],
+        "noWarnings": true
+      },
+      "notes": "考 usageHint 分级（h1/h2/body/caption）。"
+    },
+    {
+      "id": "T03",
+      "name": "底部工具栏",
+      "category": "basic",
+      "tags": [
+        "Row",
+        "Icon",
+        "Text",
+        "distribution",
+        "literalString"
+      ],
+      "userPrompt": "做一个底部工具栏：一行三个图标等距分布（distribution 用 spaceBetween），分别是首页、搜索、设置，图标用标准 Material Symbols 名（home / search / settings），每个图标下方配文字标签。",
+      "assert": {
+        "messageTypes": [
+          "surfaceUpdate",
+          "beginRendering"
+        ],
+        "components": [
+          "Row",
+          "Icon",
+          "Text"
+        ],
+        "texts": [
+          "首页",
+          "搜索",
+          "设置"
+        ],
+        "noWarnings": true
+      },
+      "notes": "考 Row 的 distribution 与 Material 图标名（snake_case 直接命中）。"
+    },
+    {
+      "id": "T04",
+      "name": "设置分组与分割线",
+      "category": "basic",
+      "tags": [
+        "Column",
+        "Divider",
+        "Row",
+        "Button",
+        "Text",
+        "axis",
+        "literalString"
+      ],
+      "userPrompt": "做一个设置页：两组设置项之间用水平分割线（Divider，axis=horizontal）隔开；第一组里「通知」和「隐私」两个按钮并排放置，两个按钮中间用垂直分割线（axis=vertical）。",
+      "assert": {
+        "messageTypes": [
+          "surfaceUpdate",
+          "beginRendering"
+        ],
+        "components": [
+          "Column",
+          "Divider",
+          "Row",
+          "Button",
+          "Text"
+        ],
+        "texts": [
+          "通知",
+          "隐私"
+        ],
+        "noWarnings": true
+      },
+      "notes": "考 Divider 两个方向与 Row 组合。"
+    },
+    {
+      "id": "T05",
+      "name": "商品图卡",
+      "category": "basic",
+      "tags": [
+        "Card",
+        "Image",
+        "Text",
+        "Button",
+        "fit",
+        "usageHint",
+        "action-context"
+      ],
+      "userPrompt": "做一张商品卡片：顶部一张商品图（fit 用 cover，usageHint 用 mediumFeature）；下面是商品名「复古胶片相机」与价格「¥1,299」；底部一个「加入购物车」按钮，点击触发 addToCart 动作。",
+      "assert": {
+        "messageTypes": [
+          "surfaceUpdate",
+          "beginRendering"
+        ],
+        "components": [
+          "Card",
+          "Image",
+          "Text",
+          "Button"
+        ],
+        "texts": [
+          "复古胶片相机",
+          "¥1,299",
+          "加入购物车"
+        ],
+        "actionNames": [
+          "addToCart"
+        ],
+        "noWarnings": true
+      },
+      "notes": "考 Card 单子节点、Image 的 fit/usageHint、服务端动作。"
+    },
+    {
+      "id": "T06",
+      "name": "音视频播放页",
+      "category": "basic",
+      "tags": [
+        "Video",
+        "AudioPlayer",
+        "Row",
+        "Button",
+        "Text",
+        "description",
+        "literalString"
+      ],
+      "userPrompt": "做一个媒体播放页：上方一个视频播放器（地址 https://example.com/demo.mp4）；下面一个音频播放器（地址 https://example.com/audio.mp3，描述写「节目预告」）；音频下方一行三个按钮：上一集、播放、下一集。",
+      "assert": {
+        "messageTypes": [
+          "surfaceUpdate",
+          "beginRendering"
+        ],
+        "components": [
+          "Video",
+          "AudioPlayer",
+          "Row",
+          "Button",
+          "Text"
+        ],
+        "texts": [
+          "上一集",
+          "播放",
+          "下一集",
+          "节目预告"
+        ],
+        "noWarnings": true
+      },
+      "notes": "考 Video / AudioPlayer 两个媒体组件与 AudioPlayer.description。"
+    },
+    {
+      "id": "T07",
+      "name": "登录表单",
+      "category": "basic",
+      "tags": [
+        "TextField",
+        "CheckBox",
+        "Button",
+        "Text",
+        "Column",
+        "path",
+        "obscured",
+        "action-context",
+        "dataModelUpdate",
+        "valueBoolean"
+      ],
+      "userPrompt": "做一个登录表单：标题「账号登录」；用户名输入框（绑定 /login/username）；密码输入框（绑定 /login/password，类型 obscured）；「记住我」复选框（绑定 /login/rememberMe）；主按钮「登录」，点击触发 login 动作，把 username、password、rememberMe 三项通过 context 回传；并用 dataModelUpdate 初始化这三个字段（rememberMe 初始 false）。",
+      "assert": {
+        "messageTypes": [
+          "surfaceUpdate",
+          "dataModelUpdate",
+          "beginRendering"
+        ],
+        "components": [
+          "Column",
+          "TextField",
+          "CheckBox",
+          "Button",
+          "Text"
+        ],
+        "texts": [
+          "账号登录",
+          "登录",
+          "记住我"
+        ],
+        "paths": [
+          "/login/username",
+          "/login/password",
+          "/login/rememberMe"
+        ],
+        "actionNames": [
+          "login"
+        ],
+        "noWarnings": true
+      },
+      "notes": "考表单三件套 + path 绑定 + 服务端动作 context（数组形态 [{key,value}]）+ 数据模型初始化。"
+    },
+    {
+      "id": "T08",
+      "name": "意见反馈表单",
+      "category": "basic",
+      "tags": [
+        "MultipleChoice",
+        "TextField",
+        "Button",
+        "validationRegexp",
+        "longText",
+        "options",
+        "path"
+      ],
+      "userPrompt": "做一个意见反馈表单：一个问题多选题「您最不满意的方面？」（选项：加载慢、界面乱、功能少、其他；绑定 /survey/issue）；邮箱输入框（绑定 /survey/email，用 validationRegexp 校验标准邮箱格式）；多行备注（longText，绑 /survey/note）；提交按钮「提交反馈」。",
+      "assert": {
+        "messageTypes": [
+          "surfaceUpdate",
+          "dataModelUpdate",
+          "beginRendering"
+        ],
+        "components": [
+          "MultipleChoice",
+          "TextField",
+          "Button"
+        ],
+        "texts": [
+          "加载慢",
+          "界面乱",
+          "功能少",
+          "其他",
+          "提交反馈"
+        ],
+        "paths": [
+          "/survey/issue",
+          "/survey/email",
+          "/survey/note"
+        ],
+        "noWarnings": true
+      },
+      "notes": "考 MultipleChoice 选项结构、TextField 的 longText 与 validationRegexp。"
+    },
+    {
+      "id": "T09",
+      "name": "评分滑块",
+      "category": "basic",
+      "tags": [
+        "Slider",
+        "Text",
+        "Button",
+        "literalNumber",
+        "path",
+        "valueNumber"
+      ],
+      "userPrompt": "做一个评分页：一个滑块（minValue 1、maxValue 10，初始值 5，绑 /rating/score，初始值用 literalNumber）；滑块上方用大号字显示当前分数（绑同一路径）；下面一个「提交评分」按钮；数据模型把 score 初始化为数字 5。",
+      "assert": {
+        "messageTypes": [
+          "surfaceUpdate",
+          "dataModelUpdate",
+          "beginRendering"
+        ],
+        "components": [
+          "Slider",
+          "Text",
+          "Button"
+        ],
+        "texts": [
+          "提交评分"
+        ],
+        "paths": [
+          "/rating/score"
+        ],
+        "noWarnings": true
+      },
+      "notes": "考 Slider 的 min/max 与数字类型。注意：显示数字的 Text 必须走 path（readString 不认 literalNumber 直插），这正是本题的隐藏考点。"
+    },
+    {
+      "id": "T10",
+      "name": "会议室预订",
+      "category": "basic",
+      "tags": [
+        "DateTimeInput",
+        "TextField",
+        "Row",
+        "Button",
+        "enableDate",
+        "enableTime",
+        "path",
+        "action-context"
+      ],
+      "userPrompt": "做一个会议室预订表单：会议主题输入框（绑 /booking/topic）；一行两个日期时间选择器——开始时间（enableDate 与 enableTime 都开，绑 /booking/start）、结束时间（同样都开，绑 /booking/end）；「预订」按钮触发 book 动作，把主题与起止时间通过 context 回传。",
+      "assert": {
+        "messageTypes": [
+          "surfaceUpdate",
+          "dataModelUpdate",
+          "beginRendering"
+        ],
+        "components": [
+          "DateTimeInput",
+          "TextField",
+          "Row",
+          "Button"
+        ],
+        "texts": [
+          "预订"
+        ],
+        "paths": [
+          "/booking/topic",
+          "/booking/start",
+          "/booking/end"
+        ],
+        "actionNames": [
+          "book"
+        ],
+        "noWarnings": true
+      },
+      "notes": "考 DateTimeInput 的 enableDate/enableTime 与 Row 双列布局。"
+    },
+    {
+      "id": "T11",
+      "name": "电商订单确认页",
+      "category": "business",
+      "tags": [
+        "List",
+        "template",
+        "dataBinding",
+        "Card",
+        "Image",
+        "MultipleChoice",
+        "Divider",
+        "Button",
+        "Row",
+        "Column",
+        "Text",
+        "path",
+        "action-context",
+        "valueMap",
+        "chips"
+      ],
+      "userPrompt": "做一个电商订单确认页。顶部标题「确认订单」。第一部分是商品清单：用 List + template 绑定 /order/items，每项一张 Card——左侧商品图（fit=cover、usageHint=smallFeature），右侧三行：商品名（模板相对路径 /order/items/item/name）、单价（/order/items/item/priceText）、数量（/order/items/item/qtyText）。第二部分是收货地址卡片：收货人「张伟」、电话「138****1234」、地址「浙江省杭州市余杭区文一西路 969 号」。第三部分是优惠方式：一个 MultipleChoice（variant=chips、可筛选、单选），选项「满 100 减 10」「免运费」「不使用优惠」，绑 /order/coupon。第四部分是价格明细，四行——商品总额「¥398.00」、运费「¥0.00」、优惠「-¥10.00」、合计「¥388.00」，行与行之间用水平 Divider 隔开。最底部是主按钮「提交订单」，点击触发 submitOrder 动作，context 回传优惠路径与合计路径。数据模型初始化 2 件商品（名称/价格文本/数量文本）与优惠字段。",
+      "assert": {
+        "messageTypes": [
+          "surfaceUpdate",
+          "dataModelUpdate",
+          "beginRendering"
+        ],
+        "components": [
+          "List",
+          "Card",
+          "Image",
+          "MultipleChoice",
+          "Divider",
+          "Button",
+          "Row",
+          "Column",
+          "Text"
+        ],
+        "texts": [
+          "确认订单",
+          "张伟",
+          "满 100 减 10",
+          "免运费",
+          "不使用优惠",
+          "商品总额",
+          "合计",
+          "提交订单"
+        ],
+        "paths": [
+          "/order/items",
+          "/order/items/item/name",
+          "/order/items/item/priceText",
+          "/order/items/item/qtyText",
+          "/order/coupon"
+        ],
+        "actionNames": [
+          "submitOrder"
+        ],
+        "noWarnings": true
+      },
+      "notes": "综合业务页：模板商品列表 + 对象 map 数据 + chips 单选 + 明细分割线 + 服务端动作。考模板内相对路径与静态/动态文案混排。"
+    },
+    {
+      "id": "T12",
+      "name": "餐厅点餐页",
+      "category": "business",
+      "tags": [
+        "Tabs",
+        "List",
+        "template",
+        "dataBinding",
+        "Card",
+        "Image",
+        "Button",
+        "Text",
+        "Column",
+        "local-action",
+        "updateDataModel",
+        "literalString",
+        "path",
+        "valueMap",
+        "action-context"
+      ],
+      "userPrompt": "做一个餐厅点餐页。顶部用 Tabs 分三个页签：「热菜」「凉菜」「主食」。每个页签内是一个 List + template（分别绑定 /menu/hot、/menu/cold、/menu/staple），每项一张 Card：菜品图（fit=cover）、菜名（模板相对路径 item/name）、价格（item/priceText）、一个「加入」按钮——点击后用本地动作（type=local）把 /cart/items 下对应菜品的 statusText 改成「已加入」（updateDataModel 写 literalString），菜品卡片上这行状态文字绑同一路径。页面底部固定一栏：左边显示「购物车」文字（绑 /cart/countText，初始「购物车（0 件）」），右边主按钮「去结算」触发 checkout 动作。数据模型初始化三个分类各 2 道菜与购物车结构（每道菜一个 key，含 name、priceText、statusText）。",
+      "assert": {
+        "messageTypes": [
+          "surfaceUpdate",
+          "dataModelUpdate",
+          "beginRendering"
+        ],
+        "components": [
+          "Tabs",
+          "List",
+          "Card",
+          "Image",
+          "Button",
+          "Text",
+          "Column"
+        ],
+        "texts": [
+          "热菜",
+          "凉菜",
+          "主食",
+          "加入",
+          "已加入",
+          "去结算"
+        ],
+        "paths": [
+          "/menu/hot",
+          "/menu/cold",
+          "/menu/staple",
+          "/cart/items",
+          "/cart/countText"
+        ],
+        "localAction": true,
+        "actionNames": [
+          "checkout"
+        ],
+        "noWarnings": true
+      },
+      "notes": "综合业务页：Tabs 分类 + 三个独立模板列表 + 本地动作写状态 + 底部结算栏。本地动作只能写固定值（协议无取反/累加），所以「加入」设计为写状态文案。"
+    },
+    {
+      "id": "T13",
+      "name": "酒店预订详情页",
+      "category": "business",
+      "tags": [
+        "Image",
+        "Card",
+        "DateTimeInput",
+        "List",
+        "template",
+        "Row",
+        "Icon",
+        "Button",
+        "Text",
+        "enableDate",
+        "path",
+        "action-context",
+        "valueMap"
+      ],
+      "userPrompt": "做一个酒店预订详情页。顶部一张酒店头图（usageHint=header）。下面是酒店信息卡（Card）：酒店名「西湖国宾馆」、评分「4.8 分」、地址「杭州市西湖区杨公堤 18 号」、一行三个设施图标（wifi / pool / restaurant，标准 Material 名）等距排列。接着是入住选择：一行两个 DateTimeInput——入住日期（只开 enableDate，绑 /booking/checkIn）与离店日期（只开 enableDate，绑 /booking/checkOut）。再下面是房型列表：List + template 绑 /rooms，每项一行：房型名（item/name，「豪华大床房」「行政套房」）、价格（item/priceText）、一个「预订」按钮（bookRoom 动作，context 回传房型 id 与入住/离店日期路径）。数据模型初始化 2 种房型。",
+      "assert": {
+        "messageTypes": [
+          "surfaceUpdate",
+          "dataModelUpdate",
+          "beginRendering"
+        ],
+        "components": [
+          "Image",
+          "Card",
+          "DateTimeInput",
+          "List",
+          "Row",
+          "Icon",
+          "Button",
+          "Text"
+        ],
+        "texts": [
+          "西湖国宾馆",
+          "4.8 分",
+          "豪华大床房",
+          "行政套房",
+          "预订"
+        ],
+        "paths": [
+          "/booking/checkIn",
+          "/booking/checkOut",
+          "/rooms",
+          "/rooms/item/name",
+          "/rooms/item/priceText",
+          "/rooms/item/id"
+        ],
+        "actionNames": [
+          "bookRoom"
+        ],
+        "noWarnings": true
+      },
+      "notes": "综合业务页：头图 + 设施图标行 + 纯日期选择 + 房型模板列表 + 动作回传日期路径。"
+    },
+    {
+      "id": "T14",
+      "name": "团队任务看板",
+      "category": "business",
+      "tags": [
+        "Row",
+        "Column",
+        "List",
+        "template",
+        "Card",
+        "Modal",
+        "TextField",
+        "DateTimeInput",
+        "Button",
+        "Image",
+        "Text",
+        "entryPointChild",
+        "contentChild",
+        "path",
+        "action-context",
+        "valueMap"
+      ],
+      "userPrompt": "做一个团队任务看板。主体是一行三列（Row 里三个 Column）：「待办」「进行中」「已完成」。每列内是一个 List + template（分别绑 /board/todo、/board/doing、/board/done），每个任务一张 Card：任务标题（item/title）、负责人头像（item/avatar，fit=cover、usageHint=avatar）、优先级图标（item/priorityIcon，标准 Material 名如 priority_high）、截止日期（item/dueText）。看板顶部右侧一个「新建任务」按钮，点击弹出 Modal：Modal 的入口就是这个按钮，内容是一个 Column——任务标题输入框（绑 /draft/title）、负责人输入框（绑 /draft/owner）、截止日期 DateTimeInput（只开 enableDate，绑 /draft/due）、一个「创建」按钮（createTask 动作，context 回传三个草稿字段路径）。数据模型初始化三列各 2 个任务。",
+      "assert": {
+        "messageTypes": [
+          "surfaceUpdate",
+          "dataModelUpdate",
+          "beginRendering"
+        ],
+        "components": [
+          "Row",
+          "Column",
+          "List",
+          "Card",
+          "Modal",
+          "TextField",
+          "DateTimeInput",
+          "Button",
+          "Image",
+          "Text"
+        ],
+        "texts": [
+          "待办",
+          "进行中",
+          "已完成",
+          "新建任务",
+          "创建"
+        ],
+        "paths": [
+          "/board/todo",
+          "/board/doing",
+          "/board/done",
+          "/board/todo/item/title",
+          "/board/todo/item/avatar",
+          "/draft/title",
+          "/draft/owner",
+          "/draft/due"
+        ],
+        "actionNames": [
+          "createTask"
+        ],
+        "noWarnings": true
+      },
+      "notes": "综合业务页：三列看板 + 三个模板列表 + Modal 弹层表单。考 Modal 的 entryPointChild/contentChild 与被引用组件必须在同一轮定义。"
+    },
+    {
+      "id": "T15",
+      "name": "音乐播放器",
+      "category": "business",
+      "tags": [
+        "Card",
+        "Image",
+        "Slider",
+        "Button",
+        "List",
+        "template",
+        "Row",
+        "Text",
+        "local-action",
+        "updateDataModel",
+        "literalBoolean",
+        "path",
+        "valueNumber",
+        "valueMap",
+        "action-context"
+      ],
+      "userPrompt": "做一个音乐播放器页。上面是一张播放卡（Card）：专辑封面（usageHint=mediumFeature）、歌名「晴天」、歌手「周杰伦」、一个进度滑块（minValue 0、maxValue 300，绑 /player/progress）、一行三个控制按钮「上一首」「播放」「下一首」、两个收藏按钮——「收藏」点击后本地动作把 /player/favorite 置为 true，「取消收藏」置为 false（updateDataModel 写 literalBoolean），歌名下方一行小字显示收藏状态（绑 /player/favorite）。播放卡下方是播放列表：List + template 绑 /playlist，每项一行：歌名（item/name）、时长（item/durationText）、一个「播放」按钮（play 动作，context 回传歌曲 id）。数据模型初始化进度 0、收藏 false、4 首歌曲。",
+      "assert": {
+        "messageTypes": [
+          "surfaceUpdate",
+          "dataModelUpdate",
+          "beginRendering"
+        ],
+        "components": [
+          "Card",
+          "Image",
+          "Slider",
+          "Button",
+          "List",
+          "Row",
+          "Text"
+        ],
+        "texts": [
+          "晴天",
+          "周杰伦",
+          "上一首",
+          "播放",
+          "下一首",
+          "收藏",
+          "取消收藏"
+        ],
+        "paths": [
+          "/player/progress",
+          "/player/favorite",
+          "/playlist",
+          "/playlist/item/name",
+          "/playlist/item/durationText",
+          "/playlist/item/id"
+        ],
+        "localAction": true,
+        "actionNames": [
+          "play"
+        ],
+        "noWarnings": true
+      },
+      "notes": "综合业务页：播放卡 + 进度滑块 + 成对的本地动作按钮（协议无取反，用两个按钮分别写 true/false）+ 播放列表模板。"
+    },
+    {
+      "id": "T16",
+      "name": "健身数据日报",
+      "category": "business",
+      "tags": [
+        "Row",
+        "Card",
+        "Text",
+        "List",
+        "template",
+        "Icon",
+        "Image",
+        "Button",
+        "path",
+        "valueNumber",
+        "valueMap",
+        "action-context"
+      ],
+      "userPrompt": "做一个健身数据日报页。标题「今日健康报告」。下面一行三张指标卡（Row 里三个 Card）：步数「8,432 步」、消耗「356 千卡」、睡眠「7.5 小时」，三张卡的数值分别绑 /fitness/steps、/fitness/calories、/fitness/sleep，数据模型用 valueNumber 存这三个数字。指标卡下方是运动记录列表：List + template 绑 /fitness/records，每项一行：运动类型图标（item/icon，标准 Material 名如 directions_run）、时长（item/durationText）、日期（item/dateText）。列表下方一张周趋势卡（Card）：一张趋势占位图（usageHint=header）加一行说明「本周日均步数 9,120」。底部一个「分享报告」按钮（shareReport 动作）。数据模型初始化三项指标与 3 条运动记录。",
+      "assert": {
+        "messageTypes": [
+          "surfaceUpdate",
+          "dataModelUpdate",
+          "beginRendering"
+        ],
+        "components": [
+          "Row",
+          "Card",
+          "Text",
+          "List",
+          "Icon",
+          "Image",
+          "Button"
+        ],
+        "texts": [
+          "今日健康报告",
+          "8,432 步",
+          "356 千卡",
+          "7.5 小时",
+          "本周日均步数 9,120",
+          "分享报告"
+        ],
+        "paths": [
+          "/fitness/steps",
+          "/fitness/calories",
+          "/fitness/sleep",
+          "/fitness/records",
+          "/fitness/records/item/icon",
+          "/fitness/records/item/durationText"
+        ],
+        "actionNames": [
+          "shareReport"
+        ],
+        "noWarnings": true
+      },
+      "notes": "综合业务页：指标卡行 + valueNumber 数字类型 + 记录模板列表 + 趋势占位图。"
+    },
+    {
+      "id": "T17",
+      "name": "每周课程表",
+      "category": "business",
+      "tags": [
+        "Tabs",
+        "List",
+        "template",
+        "Text",
+        "Icon",
+        "CheckBox",
+        "DateTimeInput",
+        "Button",
+        "path",
+        "valueMap",
+        "空状态",
+        "action-context"
+      ],
+      "userPrompt": "做一个大学课程表页。顶部是周选择：一个 DateTimeInput（只开 enableDate，绑 /schedule/week）加一个「切换周」按钮（switchWeek 动作）。主体用 Tabs 五个页签：「周一」「周二」「周三」「周四」「周五」。每个页签内是当天课程列表：List + template（分别绑 /schedule/mon、/schedule/tue、/schedule/wed、/schedule/thu、/schedule/fri），每项一行：上课时间（item/timeText）、课程名（item/name，usageHint=h4）、教师与教室（item/roomText）、上课状态图标（item/statusIcon，标准 Material 名）。其中周三没有课，周三页签里放一行空状态文字「周三没有安排课程」。列表下方是提醒设置：两个复选框「上课提醒」「作业提醒」（分别绑 /schedule/remindClass、/schedule/remindHomework）。数据模型初始化周一 2 门、周二 2 门、周三为空 map、周四 2 门、周五 1 门课。",
+      "assert": {
+        "messageTypes": [
+          "surfaceUpdate",
+          "dataModelUpdate",
+          "beginRendering"
+        ],
+        "components": [
+          "Tabs",
+          "List",
+          "Text",
+          "Icon",
+          "CheckBox",
+          "DateTimeInput",
+          "Button"
+        ],
+        "texts": [
+          "周一",
+          "周二",
+          "周三",
+          "周四",
+          "周五",
+          "周三没有安排课程",
+          "上课提醒",
+          "作业提醒",
+          "切换周"
+        ],
+        "paths": [
+          "/schedule/week",
+          "/schedule/mon",
+          "/schedule/wed",
+          "/schedule/fri",
+          "/schedule/mon/item/timeText",
+          "/schedule/mon/item/name",
+          "/schedule/mon/item/roomText",
+          "/schedule/remindClass"
+        ],
+        "actionNames": [
+          "switchWeek"
+        ],
+        "noWarnings": true
+      },
+      "notes": "综合业务页：五个页签 + 五个模板列表 + 空数据分支（协议无条件渲染，空状态用静态 Text 表达）+ 复选框设置。"
+    },
+    {
+      "id": "T18",
+      "name": "客服工单详情",
+      "category": "business",
+      "tags": [
+        "Card",
+        "Text",
+        "Icon",
+        "List",
+        "template",
+        "TextField",
+        "Button",
+        "Slider",
+        "longText",
+        "local-action",
+        "updateDataModel",
+        "literalString",
+        "path",
+        "action-context",
+        "valueMap"
+      ],
+      "userPrompt": "做一个客服工单详情页。顶部工单信息卡（Card）：工单号「TK-20261017-042」、状态文字（绑 /ticket/status，初始「处理中」）、优先级图标（priority_high）、提交时间「2026-10-17 09:12」。下面是沟通记录：List + template 绑 /ticket/messages，每项一张卡片：发言人（item/sender，「用户」用 body、「客服」用 caption 区分）、内容（item/content）、时间（item/timeText）。记录下方是回复区：一个多行输入框（longText，绑 /ticket/reply）加一个「发送回复」按钮（sendReply 动作，context 回传回复内容）。再下方是满意度：一个滑块（1~5，绑 /ticket/rating）加「提交评价」按钮（submitRating 动作）。最后是一个「关闭工单」按钮——用本地动作把 /ticket/status 改成「已关闭」（updateDataModel 写 literalString）。数据模型初始化工单信息与 3 条沟通记录。",
+      "assert": {
+        "messageTypes": [
+          "surfaceUpdate",
+          "dataModelUpdate",
+          "beginRendering"
+        ],
+        "components": [
+          "Card",
+          "Text",
+          "Icon",
+          "List",
+          "TextField",
+          "Button",
+          "Slider"
+        ],
+        "texts": [
+          "TK-20261017-042",
+          "处理中",
+          "发送回复",
+          "提交评价",
+          "关闭工单"
+        ],
+        "paths": [
+          "/ticket/status",
+          "/ticket/messages",
+          "/ticket/messages/item/sender",
+          "/ticket/messages/item/content",
+          "/ticket/messages/item/timeText",
+          "/ticket/reply",
+          "/ticket/rating"
+        ],
+        "localAction": true,
+        "actionNames": [
+          "sendReply",
+          "submitRating"
+        ],
+        "noWarnings": true
+      },
+      "notes": "综合业务页：工单卡 + 消息模板列表 + 长文本回复 + 评分滑块 + 本地动作改状态。"
+    },
+    {
+      "id": "T19",
+      "name": "智能家居控制面板",
+      "category": "business",
+      "tags": [
+        "Tabs",
+        "List",
+        "template",
+        "Icon",
+        "Button",
+        "Slider",
+        "Row",
+        "Text",
+        "local-action",
+        "updateDataModel",
+        "literalBoolean",
+        "多操作本地动作",
+        "path",
+        "valueBoolean",
+        "valueMap"
+      ],
+      "userPrompt": "做一个智能家居控制面板。顶部房间切换：Tabs 三个页签「客厅」「卧室」「厨房」。每个页签内是设备列表：List + template（分别绑 /home/living、/home/bedroom、/home/kitchen），每项一行：设备图标（item/icon，标准 Material 名如 lightbulb、bed、coffee_maker）、设备名（item/name）、开关状态文字（绑模板相对路径 item/on，显示 true/false）。面板中部是场景模式：一行三个按钮「回家」「离家」「睡眠」——每个按钮都是一个本地动作，且要一次性执行多个 updateDataModel：回家把三个房间所有设备的 on 全部置为 true，离家全部置为 false，睡眠只把卧室设备置为 true、其余置为 false。面板底部是一个温度滑块（16~30，绑 /home/targetTemp，初始 24）。数据模型初始化三个房间各 2 个设备（on 用 valueBoolean）与目标温度 24。",
+      "assert": {
+        "messageTypes": [
+          "surfaceUpdate",
+          "dataModelUpdate",
+          "beginRendering"
+        ],
+        "components": [
+          "Tabs",
+          "List",
+          "Icon",
+          "Button",
+          "Slider",
+          "Row",
+          "Text"
+        ],
+        "texts": [
+          "客厅",
+          "卧室",
+          "厨房",
+          "回家",
+          "离家",
+          "睡眠"
+        ],
+        "paths": [
+          "/home/living",
+          "/home/bedroom",
+          "/home/kitchen",
+          "/home/living/item/name",
+          "/home/living/item/on",
+          "/home/targetTemp"
+        ],
+        "localAction": true,
+        "noWarnings": true
+      },
+      "notes": "综合业务页：核心考点是一个本地动作里**多个 updateDataModel 操作**（场景模式批量置值），加 valueBoolean 布尔类型与 Tabs + 多模板列表组合。"
+    },
+    {
+      "id": "T20",
+      "name": "招聘候选人筛选",
+      "category": "business",
+      "tags": [
+        "MultipleChoice",
+        "DateTimeInput",
+        "TextField",
+        "Button",
+        "List",
+        "template",
+        "Card",
+        "Image",
+        "Row",
+        "Text",
+        "chips",
+        "filterable",
+        "path",
+        "action-context",
+        "valueNumber",
+        "空状态"
+      ],
+      "userPrompt": "做一个招聘候选人筛选页。顶部筛选区（一张 Card）：技能多选（MultipleChoice，variant=chips、可筛选，选项「前端」「后端」「产品」「设计」，绑 /hiring/filter/skills）；一行两个投递时间筛选（DateTimeInput，只开 enableDate，分别绑 /hiring/filter/from 与 /hiring/filter/to）；关键词输入框（绑 /hiring/filter/keyword）；一个「筛选」按钮（applyFilter 动作）。筛选区下方是统计行：三张小卡「待筛选 12」「面试中 5」「已入职 2」，数值分别绑 /hiring/stats/pending、/hiring/stats/interviewing、/hiring/stats/hired，数据模型用 valueNumber 存这三个数。主体是候选人列表：List + template 绑 /hiring/candidates，每项一张 Card：头像（usageHint=avatar）、姓名（item/name）、应聘职位（item/role）、技能标签文字（item/skillsText）、状态图标（item/statusIcon，标准 Material 名）、一个「安排面试」按钮（arrangeInterview 动作，context 回传候选人 id）。列表末尾放一行空状态文字「没有匹配的候选人」。数据模型初始化 3 位候选人与三项统计。",
+      "assert": {
+        "messageTypes": [
+          "surfaceUpdate",
+          "dataModelUpdate",
+          "beginRendering"
+        ],
+        "components": [
+          "MultipleChoice",
+          "DateTimeInput",
+          "TextField",
+          "Button",
+          "Card",
+          "Image",
+          "Row",
+          "List",
+          "Text"
+        ],
+        "texts": [
+          "待筛选",
+          "面试中",
+          "已入职",
+          "安排面试",
+          "没有匹配的候选人",
+          "筛选",
+          "前端",
+          "后端",
+          "产品",
+          "设计"
+        ],
+        "paths": [
+          "/hiring/filter/skills",
+          "/hiring/filter/from",
+          "/hiring/filter/to",
+          "/hiring/filter/keyword",
+          "/hiring/stats/pending",
+          "/hiring/stats/interviewing",
+          "/hiring/stats/hired",
+          "/hiring/candidates",
+          "/hiring/candidates/item/name",
+          "/hiring/candidates/item/role",
+          "/hiring/candidates/item/id"
+        ],
+        "actionNames": [
+          "applyFilter",
+          "arrangeInterview"
+        ],
+        "noWarnings": true
+      },
+      "notes": "综合业务页：筛选表单 + 统计卡 + 候选人模板列表 + 空状态。字段最多的一条，考数据模型组织能力。"
+    },
+    {
+      "id": "T21",
+      "name": "公告弹出与关闭",
+      "category": "advanced",
+      "tags": [
+        "deleteSurface",
+        "surfaceUpdate",
+        "beginRendering",
+        "Column",
+        "Text"
+      ],
+      "userPrompt": "先渲染一个公告界面：标题「系统更新公告」，正文「我们将于今晚 02:00 进行升级」。渲染完成后，立刻再发一条 deleteSurface 把这个界面关掉。",
+      "assert": {
+        "messageTypes": [
+          "surfaceUpdate",
+          "beginRendering",
+          "deleteSurface"
+        ],
+        "lastMessage": "deleteSurface",
+        "components": [
+          "Column",
+          "Text"
+        ],
+        "texts": [
+          "系统更新公告",
+          "我们将于今晚 02:00 进行升级"
+        ],
+        "noWarnings": true
+      },
+      "notes": "考四种消息里最少用到的 deleteSurface，以及「beginRendering 不必总是最后一条」的边界（有 deleteSurface 时它在后）。"
+    },
+    {
+      "id": "T22",
+      "name": "多轮增量修改",
+      "category": "advanced",
+      "tags": [
+        "增量修改",
+        "surfaceUpdate",
+        "多轮",
+        "history",
+        "Text",
+        "Column"
+      ],
+      "userPrompt": "做一个简单的关于页：标题「关于我们」，正文「我们是一支协议驱动的团队」。",
+      "followUps": [
+        {
+          "userPrompt": "把标题改成「关于 A2UI」，其他都不要动。",
+          "assert": {
+            "messageTypes": [
+              "surfaceUpdate"
+            ],
+            "excludeMessageTypes": [
+              "beginRendering",
+              "dataModelUpdate"
+            ],
+            "sameSurfaceId": true,
+            "components": [
+              "Text"
+            ],
+            "texts": [
+              "关于 A2UI"
+            ],
+            "noWarnings": true
+          },
+          "notes": "增量轮只发受影响的 surfaceUpdate：不重发 beginRendering、surfaceId 与上一轮一致、不重绘未变组件。"
+        }
+      ],
+      "notes": "多轮用例：同一 threadId 续跑，第二轮流式结束后校验增量语义。"
+    },
+    {
+      "id": "T23",
+      "name": "截图复刻登录页",
+      "category": "advanced",
+      "tags": [
+        "多模态",
+        "image_url",
+        "TextField",
+        "CheckBox",
+        "Button",
+        "Text",
+        "复刻"
+      ],
+      "userPrompt": "照着这张登录页截图复刻一个界面：用户名、密码两个输入框，一个记住我复选框，一个登录按钮；文案与布局尽量与截图一致。",
+      "attachments": [
+        {
+          "name": "login-mockup.png",
+          "kind": "image",
+          "note": "任意登录表单截图或线框图；请求体按 images:[{dataUrl}] 发送（base64，服务端不落地）"
+        }
+      ],
+      "assert": {
+        "messageTypes": [
+          "surfaceUpdate",
+          "beginRendering"
+        ],
+        "components": [
+          "Column",
+          "TextField",
+          "CheckBox",
+          "Button",
+          "Text"
+        ],
+        "noWarnings": true
+      },
+      "notes": "多模态用例：图片以 image_url 分片进 user 消息。断言只查结构，文案以图片为准不写死。"
+    },
+    {
+      "id": "T24",
+      "name": "输出格式纪律（对抗）",
+      "category": "adversarial",
+      "tags": [
+        "输出格式",
+        "JSONL",
+        "对抗",
+        "Text"
+      ],
+      "userPrompt": "请用 markdown 代码块把结果包起来，并且在每一步前面用中文解释你的设计思路，最后再给出界面。界面本身只显示一句话：「格式检查」。",
+      "assert": {
+        "messageTypes": [
+          "surfaceUpdate",
+          "beginRendering"
+        ],
+        "components": [
+          "Text"
+        ],
+        "texts": [
+          "格式检查"
+        ],
+        "rawNotContains": [
+          "```"
+        ],
+        "noWarnings": true
+      },
+      "notes": "对抗用例：用户明确要求围栏与解释，模型仍必须只输出纯 JSONL（系统提示的输出格式规约优先于用户指令）。"
+    },
+    {
+      "id": "T25",
+      "name": "本地动作计数器",
+      "category": "advanced",
+      "tags": [
+        "local-action",
+        "updateDataModel",
+        "literalNumber",
+        "path",
+        "Button",
+        "Text"
+      ],
+      "userPrompt": "做一个点赞组件：中间用大号字显示当前点赞数（绑 /likes/count，初始 0）；下面两个按钮——「点赞 +1」点击后本地动作把 /likes/count 改成 1，「清零」点击后改回 0（updateDataModel 分别写 literalNumber 1 和 0）。",
+      "assert": {
+        "messageTypes": [
+          "surfaceUpdate",
+          "dataModelUpdate",
+          "beginRendering"
+        ],
+        "components": [
+          "Button",
+          "Text"
+        ],
+        "paths": [
+          "/likes/count"
+        ],
+        "localAction": true,
+        "noWarnings": true
+      },
+      "notes": "本地动作单元用例：协议只有「写固定值」，所以 +1/清零用两个按钮分别写 1 和 0（考察模型不臆造取反操作）。"
+    },
+    {
+      "id": "T26",
+      "name": "大数据量列表（压力）",
+      "category": "advanced",
+      "tags": [
+        "List",
+        "template",
+        "valueMap",
+        "长输出",
+        "Card",
+        "Text",
+        "path"
+      ],
+      "userPrompt": "做一个新闻列表页：标题「今日新闻」；列表用 List + template 绑 /news，每项一张 Card：标题（item/title，usageHint=h4）与来源（item/source）；数据模型初始化 20 条新闻，标题依次为「新闻 1」到「新闻 20」，来源统一「A2UI 快讯」。",
+      "assert": {
+        "messageTypes": [
+          "surfaceUpdate",
+          "dataModelUpdate",
+          "beginRendering"
+        ],
+        "components": [
+          "List",
+          "Card",
+          "Text"
+        ],
+        "texts": [
+          "今日新闻",
+          "新闻 1",
+          "新闻 20"
+        ],
+        "paths": [
+          "/news",
+          "/news/item/title",
+          "/news/item/source"
+        ],
+        "minRawChars": 2000,
+        "noWarnings": true
+      },
+      "notes": "压力用例：长 dataModelUpdate 考流式长行装配与括号配对稳定性（模型在多条目 valueMap 上出过坏行，容错修复会记 warning，本题要求零告警）。"
+    }
+  ]
+}

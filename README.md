@@ -165,7 +165,11 @@ Vite + Vue3 应用，通过 Vite alias 直接引用各包 `src`，改 SDK 无需
    （不是 id，`product-card` 用的就是 `gallery-product-card`）；**不夺走会话的活跃 surface**。
 3. **agent**：`mock`（离线假数据，当前默认）与 `openai` 两个实现，切换开关是 `AGENT_PROVIDER`；
    两者共用同一套「文本 → 协议消息」抽取与流式行装配，产出必然一致。
-4. **模型对话**：`POST /api/a2ui/chat` —— **独立的一条路**，只跟模型说话、不产出任何 A2UI 协议。
+4. **图标按需查（MCP）**：`Icon` 的图标名用 Element Plus 图标库导出名，但**清单不进 system prompt**——
+   agent 侧挂了一个图标 MCP 工具（`searchIcons` / `listIcons` / `getIcon`），模型生成图标前按需查询，
+   中文概念（「购物车」）直接映射到真实导出名（`ShoppingCart`）。开关 `AGENT_ICON_TOOLS`，
+   同一 MCP Server 也能独立跑 stdio 给外部客户端用。详见 `docs/a2ui-agent-prompt.md` §4。
+5. **模型对话**：`POST /api/a2ui/chat` —— **独立的一条路**，只跟模型说话、不产出任何 A2UI 协议。
    用途是排掉协议层与渲染层的变量，单独验证「baseURL + Key + 模型名」通不通：
    未配 Key 返回 503（开流之前），成功则流回模型原话（失败走流内 `RUN_ERROR`）。
    默认接 DeepSeek（`OPENAI_BASE_URL=https://api.deepseek.com` / `OPENAI_MODEL=deepseek-flash`），

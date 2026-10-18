@@ -73,6 +73,7 @@ pnpm --filter a2ui-playground-server dev     # http://localhost:3000
 | `SESSION_TTL_MS` | `1800000` | 会话空转回收时间，`0` = 不回收 |
 | `MOCK_STREAM_DELAY_MS` | `0` | 模拟吐字间隔，设正数可肉眼看到流式效果；同时是场景字符流的默认节奏 |
 | `SCENARIO_CHUNK_SIZE` | `50` | 场景字符流的默认块长（字符数），可按请求用 `?chunk=` 覆盖 |
+| `AGENT_ICON_TOOLS` | 开 | A2UI 生成路径是否挂**图标 MCP 工具**（模型按需查询 Element Plus 图标名）。`0`/`false`/`off` 关掉；详见 `docs/a2ui-agent-prompt.md` §4 |
 
 ### 接 DeepSeek（`.env` 里默认就是它）
 

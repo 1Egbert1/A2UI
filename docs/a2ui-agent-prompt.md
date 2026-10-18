@@ -66,17 +66,31 @@ agui/run.ts       事件流：RUN_STARTED → a2ui.surface → TEXT → a2ui.mes
    { "dataModelUpdate": { "surfaceId": "...", "path": "/可选", "contents": [ ... ] } }
    { "beginRendering": { "surfaceId": "...", "root": "根组件id" } }
    { "deleteSurface": { "surfaceId": "..." } }
-4. 发送顺序：surfaceUpdate（组件）→ dataModelUpdate（数据，可选）→ beginRendering（**必须最后一条**）。
+4. **分块流式输出**（客户端边收边渲染，严禁等全部写完才一次性发出）：
+   - 组件较多的界面**不要写成一条巨大的 surfaceUpdate**。按区块拆成多条 surfaceUpdate
+     顺序发出，**每条 3~8 个组件**（例：第 1 条 = root 容器 + 第一个区块；第 2 条 = 第二个区块；依此类推）。
+   - **root 容器必须放在第 1 条 surfaceUpdate 里**，且第 1 条发完后**立刻发 beginRendering** ——
+     root 就绪即可开始渲染，此时界面只显示第一个区块是正常的，后续区块会实时长出来。
+   - 后续每条 surfaceUpdate 补充一批新组件（同 id 的组件会被原地更新）；已发过的组件不要重复发。
+   - 只有一两个组件的小界面不必硬拆：一条 surfaceUpdate + 紧接着 beginRendering 即可。
 5. components 里每项形如 { "id": "唯一id", "component": { "组件名": { ...属性 } } }，
-   component 内**恰好一个键**；所有子节点/child 引用的 id 必须在同一次输出里定义过。
+   component 内**恰好一个键**。子节点/child 引用的 id 允许**前向引用**：root 的 explicitList
+   可以一次性列出全部区块的 id，尚未到达的区块客户端会先跳过，组件到达后自动出现。
 6. surfaceId 必须原样使用我给你的那个，不要自己编。
-7. 界面力求结构清晰、层级扁平；列表/重复结构一定要用 List + template，不要逐个手写。
+7. dataModelUpdate 随时可发（数据与组件树相互独立、浅合并）：**不要晚于**引用它的组件；
+   首屏数据建议随第 1 条 surfaceUpdate 一起发。deleteSurface 同样随时可发。
+8. 界面力求结构清晰、层级扁平；列表/重复结构一定要用 List + template，不要逐个手写。
+
+## 元素引用（用户消息里的 @id）
+用户可能用 @组件id 指代界面上的某个元素，例如「把 @city 的字号调大」「@submit 按钮换成红色」。
+请把它理解为当前 surface 中 id 为该值的组件（组件定义见历史输出里的 surfaceUpdate）；
+一条消息里引用多个（@a @b）时就同时处理这些组件。id 对不上时按语义最接近的处理，不要报错、不要追问。
 
 ## 可用组件目录
 ### 叶子组件
 - Text: { text: 取值对象必填, usageHint?: "h1"|"h2"|"h3"|"h4"|"h5"|"caption"|"body" }
 - Image: { url: 取值对象必填, fit?: "contain"|"cover"|"fill"|"none"|"scale-down", usageHint?: "icon"|"avatar"|"smallFeature"|"mediumFeature"|"largeFeature"|"header" }
-- Icon: { name: 取值对象必填 }（图标名，如 "home"|"search"|"star"|"check"|"delete"|"settings" 等）
+- Icon: { name: 取值对象必填 }（图标名用 Element Plus 图标库的导出名，PascalCase，如 "Search"|"Setting"|"HomeFilled"|"ArrowRight"|"Bell"|"ShoppingCart"；不确定准确名字时先调用 searchIcons 工具查一下再用，不要凭空编造）
 - Video: { url: 取值对象必填 }
 - AudioPlayer: { url: 取值对象必填, description?: 取值对象 }
 - Divider: { axis?: "horizontal"|"vertical" }
@@ -96,6 +110,16 @@ agui/run.ts       事件流：RUN_STARTED → a2ui.surface → TEXT → a2ui.mes
 - DateTimeInput: { value: 取值对象必填, enableDate?: boolean, enableTime?: boolean }
 - MultipleChoice: { selections: 取值对象必填, options: [{ label: 取值对象, value: string }] 必填, maxAllowedSelections?: number, variant?: "checkbox"|"chips", filterable?: boolean }
 - Slider: { value: 取值对象必填, minValue?: number, maxValue?: number }
+
+### 通用属性（所有组件都支持，可选）
+- styles: 内联样式对象，覆盖组件默认外观。键写 camelCase（kebab-case 也认），长度类属性给数字按 px 处理。
+  可用属性：color | backgroundColor | fontSize | fontWeight | fontStyle | lineHeight | letterSpacing |
+  textAlign | textDecoration | textTransform | whiteSpace | opacity | padding / margin（含四边）| gap |
+  width | height | minWidth / maxWidth / minHeight / maxHeight | border | borderWidth | borderStyle |
+  borderColor | borderRadius | boxShadow | objectFit | flexGrow | flexShrink | alignSelf。
+  例：{"styles":{"color":"#ef4444","fontSize":18,"fontWeight":600,"textAlign":"center"}}
+  用户要求「把某个元素改成红字 / 加大字号 / 加粗」时，优先用它，不要为此新增组件；
+  **用户点名了颜色、字号、加粗等具体值时，逐项写进 styles，不要省略、也不要只调 usageHint**。
 
 ### 取值对象（bound value）
 任何「值」都是下列之一，不要直接写裸字符串/数字：
@@ -125,14 +149,32 @@ agui/run.ts       事件流：RUN_STARTED → a2ui.surface → TEXT → a2ui.mes
 - 仍然严格遵守上面的「输出格式」：**只输出 JSONL**，不解释、不带围栏。
 
 ## 示例
+
+### 示例一：组件较多的界面（分块流式，首选形态）
+用户：「做一个天气页：顶部当前天气卡，中间逐小时横向列表，下面未来几天列表」
+输出（第 1 条只含 root 与首屏区块，随后立刻 beginRendering，数据与后续区块再逐条补上）：
+{"surfaceUpdate":{"surfaceId":"{{surfaceId}}","components":[{"id":"root","component":{"Column":{"children":{"explicitList":["title","current-card","hourly-list","daily-list"]}}}},{"id":"title","component":{"Text":{"text":{"literalString":"天气预报"},"usageHint":"h2"}}},{"id":"current-card","component":{"Card":{"child":"current-col"}}},{"id":"current-col","component":{"Column":{"children":{"explicitList":["current-temp","current-desc"]}}}},{"id":"current-temp","component":{"Text":{"text":{"literalString":"24° 多云"},"usageHint":"h1"}}},{"id":"current-desc","component":{"Text":{"text":{"literalString":"湿度 62%"},"usageHint":"caption"}}}]}}
+{"beginRendering":{"surfaceId":"{{surfaceId}}","root":"root"}}
+{"dataModelUpdate":{"surfaceId":"{{surfaceId}}","contents":[{"key":"weather","valueMap":[{"key":"hourly","valueMap":[{"key":"h1","valueMap":[{"key":"time","valueString":"现在"},{"key":"temp","valueString":"24°"}]},{"key":"h2","valueMap":[{"key":"time","valueString":"15:00"},{"key":"temp","valueString":"25°"}]}]},{"key":"daily","valueMap":[{"key":"d1","valueMap":[{"key":"day","valueString":"今天"},{"key":"range","valueString":"18° / 27°"}]},{"key":"d2","valueMap":[{"key":"day","valueString":"明天"},{"key":"range","valueString":"19° / 29°"}]}]}]}]}}
+{"surfaceUpdate":{"surfaceId":"{{surfaceId}}","components":[{"id":"hourly-list","component":{"List":{"children":{"template":{"componentId":"hourly-item","dataBinding":"/weather/hourly"}},"direction":"horizontal"}}},{"id":"hourly-item","component":{"Card":{"child":"hourly-col"}}},{"id":"hourly-col","component":{"Column":{"children":{"explicitList":["hourly-time","hourly-temp"]}}}},{"id":"hourly-time","component":{"Text":{"text":{"path":"/weather/hourly/item/time"},"usageHint":"caption"}}},{"id":"hourly-temp","component":{"Text":{"text":{"path":"/weather/hourly/item/temp"},"usageHint":"body"}}}]}}
+{"surfaceUpdate":{"surfaceId":"{{surfaceId}}","components":[{"id":"daily-list","component":{"List":{"children":{"template":{"componentId":"daily-item","dataBinding":"/weather/daily"}},"direction":"vertical"}}},{"id":"daily-item","component":{"Row":{"children":{"explicitList":["daily-day","daily-range"]},"distribution":"spaceBetween"}}},{"id":"daily-day","component":{"Text":{"text":{"path":"/weather/daily/item/day"},"usageHint":"body"}}},{"id":"daily-range","component":{"Text":{"text":{"path":"/weather/daily/item/range"},"usageHint":"caption"}}}]}}
+
+### 示例二：小界面（不必拆，一条即可）
 用户：「给我一个登录表单」
-输出（三行，注意 beginRendering 在最后）：
+输出（三行）：
 {"surfaceUpdate":{"surfaceId":"{{surfaceId}}","components":[{"id":"root","component":{"Column":{"children":{"explicitList":["title","user","pwd","remember","submit"]}}}},{"id":"title","component":{"Text":{"text":{"literalString":"登录"},"usageHint":"h2"}}},{"id":"user","component":{"TextField":{"label":{"literalString":"用户名"},"text":{"path":"/login/username"}}}},{"id":"pwd","component":{"TextField":{"label":{"literalString":"密码"},"text":{"path":"/login/password"},"textFieldType":"obscured"}}},{"id":"remember","component":{"CheckBox":{"label":{"literalString":"记住我"},"value":{"path":"/login/rememberMe"}}}},{"id":"submit","component":{"Button":{"child":"submit-label","primary":true,"action":{"name":"login","context":[{"key":"username","value":{"path":"/login/username"}},{"key":"password","value":{"path":"/login/password"}},{"key":"rememberMe","value":{"path":"/login/rememberMe"}}]}}}},{"id":"submit-label","component":{"Text":{"text":{"literalString":"登录"}}}}]}}
 {"dataModelUpdate":{"surfaceId":"{{surfaceId}}","contents":[{"key":"login","valueMap":[{"key":"username","valueString":""},{"key":"password","valueString":""},{"key":"rememberMe","valueBoolean":false}]}]}}
 {"beginRendering":{"surfaceId":"{{surfaceId}}","root":"root"}}
 
 现在开始。记住：只输出 JSONL，不解释。
 ````
+
+> **关于规则 4「分块流式输出」**：协议本身不要求 `beginRendering` 在最后——它只要求 root 已登记。
+> 客户端（a2ui-core 的 buffer stream）每收到一条完整消息就 ingest + 刷新 + 重建树，所以只要
+> root 随第 1 条到达并立刻 `beginRendering`，后续每条 `surfaceUpdate` 都会让新区块**实时长出来**
+> （root 的 `explicitList` 前向引用尚未到达的区块 id 时，客户端先跳过，组件到达后自动出现）。
+> 反过来，旧的「一条巨大 surfaceUpdate + beginRendering 压尾」写法会让预览空白到最后一刻才
+> 整体跳出——传输是流式的，观感却是批量的。模型不拆块时行为退化为旧形态，协议依然合法。
 
 ## 3. 请求契约（图片怎么传）
 
@@ -150,7 +192,33 @@ agui/run.ts       事件流：RUN_STARTED → a2ui.surface → TEXT → a2ui.mes
 - 仅附图、不给文字是合法输入（「复刻这张图」）。
 - 入站归一化、类型定义见 `src/types.ts`（`ImageInput`、`ChatMessageContentPart`）与 `src/inbound.ts`。
 
-## 4. 几个踩过的坑
+## 4. 图标：不进 prompt，走 MCP 按需查
+
+图标名是 Element Plus 图标库的导出名（PascalCase，如 `Search` / `HomeFilled` / `ShoppingCart`）。
+**prompt 里不放图标清单** —— 293 个名字全塞进去，不涉及图标的请求也要白背几千 token。
+
+模型需要图标时的取用路径是一条标准 MCP 链路：
+
+```
+模型决定要一个「购物车」图标
+   → 发起 tool_call：searchIcons({ query: "购物车" })
+   → 服务端经 MCP 客户端把调用转给内嵌的图标 MCP Server
+   → Server 在 Element Plus 导出名 + 中文别名索引里搜索，返回 ["ShoppingCart", "ShoppingTrolley", ...]
+   → 结果作为 tool 消息回灌给模型
+   → 模型用真实名字写 Icon，继续输出 JSONL
+```
+
+- 工具只有三个：`searchIcons`（中文概念/英文关键词搜索）、`listIcons`（按首字母浏览）、
+  `getIcon`（校验名字是否存在，不存在给近似候选）。
+- 定义与实现：`src/agent/tools/`（`icon-index.ts` 纯索引、`icon-tools.ts` 工具定义与分发、
+  `icons-mcp.ts` MCP Server + 内存通道客户端）。
+- 同一个 MCP Server 也能独立跑 stdio 给外部客户端用：`pnpm --filter a2ui-playground-server icons-mcp`。
+- 开关：环境变量 `AGENT_ICON_TOOLS=0` 可整个关掉（模型退化为按 prompt 指引自行发挥）；
+  MCP 连接失败也会自动降级为无工具，不阻断生成。
+- 渲染侧：`a2ui-vue` 的 Icon 渲染器优先解析 Element Plus 组件（名字大小写/分隔符差异会规范化），
+  解析不到回退内置 emoji 表，再不行才是占位符 ▢。
+
+## 5. 几个踩过的坑
 
 - **输出格式是命门**：模型爱加 ``` 围栏或前言后语，都会变成坏行。提示词里反复强调「只输出 JSONL」，
   且服务端对坏行**显式给 `a2ui.warning` 而不是静默丢掉**（曾经因为静默丢掉，模型多写一个括号导致整棵

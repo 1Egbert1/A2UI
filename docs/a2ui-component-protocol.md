@@ -285,8 +285,8 @@ Row 主轴水平（`flex-direction: row`），Column 主轴垂直（`flex-direct
 
 | # | 差异 | 现状 | 影响 |
 | --- | --- | --- | --- |
-| 1 | 顶层 `styles`（`font` / `primaryColor`）主题 | 未接入，全内联样式 | 无法按 surface 换肤 |
-| 2 | `Icon` 图形资源 | emoji 字符占位 | 观感非正式图标，需接图标集 |
+| 1 | 顶层 `styles`（`font` / `primaryColor`）主题 | surface 级主题未接入；**组件级 `styles` 已实现**（本项目的受控扩展，见 [`a2ui-styles-extension.md`](./a2ui-styles-extension.md)） | 可按组件微调外观，暂不支持整面换肤 |
+| 2 | `Icon` 图形资源 | **已接 Element Plus 图标库**：按导出名（PascalCase）渲染真实 svg 组件；旧名/未知名回退内置 emoji 表，再不行用占位符 | 图标名可通过 agent 的 MCP 工具按需查询（`docs/a2ui-agent-prompt.md` §4） |
 | 3 | `Button.action` 回传 | **已实现**：服务端分支组装协议 `userAction`（`context` 数组→对象、`path` 已求值），经 `a2ui-action` 事件交宿主；本地分支（`type: "local"`）走 `updateModel` 写回，不外发 | 传输方式仍由宿主决定，core 不碰网络 |
 | 4 | `Text` 缺省 `usageHint` | 渲染为 `<span>`（非 `<body>` 的 `<p>`） | 视觉上等价，语义标签不同 |
 
