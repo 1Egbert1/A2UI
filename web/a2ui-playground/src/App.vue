@@ -901,8 +901,15 @@ function newServerThreadId(prefix = 'pg'): string {
  */
 const previewSource = ref<'api' | 'stream'>('api');
 
-/** 服务端地址：可用 `VITE_A2UI_SERVER` 覆盖，缺省打本机 3000。 */
-const SERVER_BASE = String(import.meta.env.VITE_A2UI_SERVER || 'http://localhost:3000');
+/**
+ * 服务端地址：可用 `VITE_A2UI_SERVER` 覆盖，缺省打本机 3000。
+ *
+ * 这里必须是 `??` 而不是 `||`：生产部署是**前后端同域**（nginx 把 `/api` 反代到 Node），
+ * 需要把 `VITE_A2UI_SERVER` 显式设成**空串**让请求走相对路径（`/api/a2ui/run`）。
+ * 用 `||` 的话空串是 falsy，会被顶回 `http://localhost:3000` —— 那就是在用户自己的
+ * 机器上找 3000 端口，必然连不上。
+ */
+const SERVER_BASE = String(import.meta.env.VITE_A2UI_SERVER ?? 'http://localhost:3000');
 
 /** 输入框内容。发送后立即清空。 */
 const chatInput = ref('');
