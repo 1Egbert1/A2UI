@@ -268,6 +268,43 @@ describe('A2UI JSONL buffer stream', () => {
       );
     });
 
+    it('跨消息前向引用：root 先列出全部区块 id，后续 surfaceUpdate 逐块补全，树单调增长', () => {
+      // 这正是分块流式规约（prompt 规则 4/5）依赖的语义：root 的 explicitList 可以
+      // 一次性列出尚未到达的区块 id —— 客户端先跳过，组件到达后自动出现。
+      const stream = createJSONLStream();
+      const SURFACE = 'forward-ref';
+
+      const line = (components: string): string =>
+        `{"surfaceUpdate":{"surfaceId":"${SURFACE}","components":[${components}]}}`;
+
+      // 第 1 条：root 的 explicitList 列出 a/b/c，但只定义 root 与 a（b/c 是前向引用）
+      stream.push(
+        `${line(
+          '{"id":"root","component":{"Column":{"children":{"explicitList":["a","b","c"]}}}},' +
+            '{"id":"a","component":{"Text":{"text":{"literalString":"首屏"}}}}',
+        )}\n`,
+      );
+      assert.equal(Object.keys(getAllHydrateNodes()).length, 2, '只登记了 root 与 a');
+      assert.equal(Object.keys(getAllSurfaces()).length, 0, 'beginRendering 未到 → 无 surface');
+
+      // 第 2 条：root 已登记 → 立刻 beginRendering，树里只有 root + a（b/c 被静默跳过）
+      stream.push(`{"beginRendering":{"surfaceId":"${SURFACE}","root":"root"}}\n`);
+      const first = getTree(SURFACE);
+      assert.ok(first, 'beginRendering 之后应有树');
+      assert.equal(countTreeNodes(first!.root), 2, '前向引用的区块此时还不在树里');
+      assert.deepEqual(getAllErrors(), {}, '前向引用不该报错');
+
+      // 第 3 条：b 到达 → 树长出 b
+      stream.push(`${line('{"id":"b","component":{"Text":{"text":{"literalString":"第二块"}}}}')}\n`);
+      assert.equal(countTreeNodes(getTree(SURFACE)!.root), 3, 'b 到达后应进树');
+
+      // 第 4 条：c 到达 → 树再长出 c
+      stream.push(`${line('{"id":"c","component":{"Text":{"text":{"literalString":"第三块"}}}}')}\n`);
+      assert.equal(countTreeNodes(getTree(SURFACE)!.root), 4, 'c 到达后应进树');
+
+      assert.deepEqual(getAllErrors(), {}, '整条流式序列零报错');
+    });
+
     it('should lay out the data model as soon as dataModelUpdate arrives', () => {
       const stream = createJSONLStream();
       for (const line of MIX_LINES) {
