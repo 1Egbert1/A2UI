@@ -94,11 +94,88 @@ describe('extract / extractLine', () => {
     if ('surfaceUpdate' in message) {
       assert.equal(message.surfaceUpdate.components.length, 1);
     }
-    assert.match(result.warnings[0] ?? '', /已自动修复/);
+    assert.match(result.warnings[0] ?? '', /多了一个 `}`/);
   });
 
-  it('不是「多 }」的坏行（如少逗号）照旧记坏行、不误伤', () => {
-    // 两个对象间少了逗号：V8 报 Unexpected token，不属于可修复的「多 }」模式。
+  it('对象少一个闭合 } 时自动修复并采纳', () => {
+    const good =
+      '{"surfaceUpdate":{"surfaceId":"sf","components":[{"id":"a","component":{"Text":{"text":{"literalString":"hi"}}}}]}}';
+    // 组件对象少写一个 }，V8 报 Expected double-quoted property name。
+    const bad = good.replace('}}}}]', '}}}]');
+    const result = extractLine(bad);
+
+    assert.equal(result.messages.length, 1);
+    assert.match(result.warnings[0] ?? '', /少了一个闭合 `}`/);
+  });
+
+  it('结尾少一组闭合 ]} 时自动修复并采纳', () => {
+    const good =
+      '{"dataModelUpdate":{"surfaceId":"sf","contents":[{"key":"a","valueMap":[{"key":"x","valueString":"1"}]}]}}';
+    // contents 数组与其外层对象同时缺闭合：结尾本应是 ]}} 只给了 }。
+    const bad = good.replace('}]}]}}', '}]}}');
+    const result = extractLine(bad);
+
+    assert.equal(result.messages.length, 1);
+    assert.match(result.warnings[0] ?? '', /少了一组闭合 `]}`/);
+  });
+
+  it('结尾整段缺失（少 ]}} 三层）时按栈补齐', () => {
+    // 这条路径靠「括号栈 + 结尾补齐」而不是报错文案：V8 的 position 会落在 EOF。
+    const good =
+      '{"surfaceUpdate":{"surfaceId":"sf","components":[{"id":"a","component":{"Text":{"text":{"literalString":"hi"}}}}]}}';
+    const bad = good.replace(']}}', '');
+    const result = extractLine(bad);
+
+    assert.equal(result.messages.length, 1);
+    assert.match(result.warnings[0] ?? '', /结尾缺少 3 个闭合符/);
+  });
+
+  it('内层少两个闭合 } 时自动修复并采纳', () => {
+    // 深层 styles 嵌套少两层闭合：解析器会一路读到下一个组件的 `{` 才报错，
+    // 真正缺的 `}}` 在逗号前 —— 插入锚点必须回退一位。
+    const bad =
+      '{"surfaceUpdate":{"surfaceId":"sf","components":[' +
+      '{"id":"a","component":{"Icon":{"name":{"literalString":"Location"},"styles":{"width":16}},' +
+      '{"id":"b","component":{"Text":{"text":{"literalString":"x"}}}}]}}';
+    const result = extractLine(bad);
+
+    assert.equal(result.messages.length, 1);
+    assert.match(result.warnings[0] ?? '', /补上 `}}`/);
+  });
+
+  it('最后一个组件少 } 且报错是「属性值后期望 , 或 }」时也修得好', () => {
+    const good =
+      '{"dataModelUpdate":{"surfaceId":"sf","contents":[{"key":"a","valueMap":[{"key":"x","valueString":"1"}]}]}}';
+    // 最后一个 valueMap 元素少一个 }，结尾变成 }]}} 少一层。
+    const bad = good.replace('"valueString":"1"}]}]}}', '"valueString":"1"}]}}');
+    const result = extractLine(bad);
+
+    assert.equal(result.messages.length, 1);
+    assert.doesNotMatch(result.warnings[0] ?? '', /JSON 解析失败/);
+  });
+
+  it('连写错两处（组件收尾多 } 且数组 ] 错位）时按括号结构修补', () => {
+    // 真实形态：`]` 该在组件闭合之后，模型却在收尾处多敲了一个 }，
+    // 让 `]` 整体后移一位、末尾又多出一个 }。单点编辑怎么删/换/插都不成立，
+    // 只有按括号栈迭代修补才能收敛。
+    const bad =
+      '{"surfaceUpdate":{"surfaceId":"sf","components":[{"id":"a","component":{"Row":{"children":{"explicitList":["x"]},"alignment":"center"}}}}]}}}';
+    const result = extractLine(bad);
+
+    assert.equal(result.messages.length, 1);
+    assert.match(result.warnings[0] ?? '', /多处括号错位/);
+  });
+
+  it('报文被截断（字符串未闭合）时不硬修', () => {
+    // 截断和「括号写错」是两件事：补括号只会造出半个界面，宁可丢行。
+    const result = extractLine('{"surfaceUpdate":{"surfaceId":"sf","components":[{"id":"a","comp');
+
+    assert.equal(result.messages.length, 0);
+    assert.match(result.warnings[0], /JSON 解析失败/);
+  });
+
+  it('不是括号类错误的坏行（如少逗号）照旧记坏行、不误伤', () => {
+    // 两个对象间少了逗号：V8 报 Unexpected token，不属于可修复的括号模式。
     const result = extractLine(
       '{"surfaceUpdate":{"surfaceId":"sf","components":[]}}{"beginRendering":{"surfaceId":"sf","root":"r"}}',
     );
