@@ -83,7 +83,16 @@ if ! command -v nginx >/dev/null 2>&1; then
   say "安装 nginx"
   pkg_install nginx
 fi
-systemctl enable --now nginx
+
+# 腾讯云部分镜像预装了 Caddy（默认 :80 静态站），会占住 80 导致 nginx 起不来：
+#   nginx: [emerg] bind() to 0.0.0.0:80 failed (98: Address already in use)
+# 这里只提示，不替用户停服务。
+if systemctl is-active caddy >/dev/null 2>&1; then
+  warn "检测到 Caddy 正在占用 80，nginx 会启动失败。"
+  warn "若不需要它：sudo systemctl disable --now caddy  然后 sudo systemctl start nginx"
+fi
+
+systemctl enable --now nginx || systemctl restart nginx
 
 # ---------- 6. pm2 ----------
 if ! command -v pm2 >/dev/null 2>&1; then

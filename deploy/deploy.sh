@@ -89,6 +89,20 @@ if [ "$ok" -ne 1 ]; then
 fi
 
 cat /tmp/a2ui-health.json; echo
+
+# 顺带确认 nginx 确实把 /api 转到了后端（不阻塞，只提示）。
+# 踩过的坑：镜像预装的 Caddy 占着 80，nginx 静默 failed，表现为 /api 返回 Caddy 的 404。
+if systemctl is-active nginx >/dev/null 2>&1; then
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1/api/a2ui/scenarios 2>/dev/null || echo 000)
+  if [ "$code" = "200" ]; then
+    echo "nginx 反代: 200 ✓"
+  else
+    warn "nginx 反代异常（/api/a2ui/scenarios -> $code）：检查 /etc/nginx/sites-enabled/a2ui 与 80 端口占用（sudo ss -lntp | grep :80）"
+  fi
+else
+  warn "nginx 未运行，公网访问会失败"
+fi
+
 say "部署完成"
 cat <<TIP
 
