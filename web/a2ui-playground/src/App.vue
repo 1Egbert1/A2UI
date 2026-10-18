@@ -68,13 +68,42 @@
             >
               Stream 模拟
             </button>
+            <button
+              type="button"
+              class="segmented__item"
+              :class="{ 'segmented__item--active': picking }"
+              :disabled="stageTab !== 'preview' || !treeRoot"
+              :title="
+                picking
+                  ? '选取中：点击预览里的元素把它引用到输入框（Esc 退出）'
+                  : '选择元素：点击预览里的组件，把它的 id 以 @id 加进对话输入框（也可按住 Alt 直接点击）'
+              "
+              @click="togglePicking"
+            >
+              {{ picking ? '选取中…' : '选择元素' }}
+            </button>
           </div>
           <span class="tag">{{ stageTag }}</span>
         </div>
 
         <div v-show="stageTab === 'preview'" class="stage">
-          <div ref="previewRef" class="preview"></div>
-          <p v-if="!treeRoot" class="hint">
+          <!--
+            选取模式：开启后点击容器内任意位置，取最近的带 id 元素（withRootId 给每个
+            组件根元素加了 `surfaceId-componentId`），把 componentId 以 @id 加进输入框。
+            click 用 capture：选取模式下要**截获**点击，不让它触发组件自身的交互
+            （按钮动作 / 输入框聚焦 / 页签切换），否则「选元素」会顺手改界面。
+          -->
+          <div
+            ref="previewRef"
+            class="preview"
+            :class="{ 'preview--picking': picking }"
+            @click.capture="onPreviewClick"
+            @mouseover.capture="onPreviewHover"
+          ></div>
+          <p v-if="picking" class="hint hint--picking">
+            点击预览里的元素，把它的 id（如 @city）加到对话输入框；Esc 退出选取。平时也可按住 Alt 直接点击。
+          </p>
+          <p v-else-if="!treeRoot" class="hint">
             暂无可渲染的组件树：需要 beginRendering 让 surface 诞生，且组件类型已注册渲染器。
           </p>
 
@@ -388,6 +417,7 @@
           </button>
 
           <el-input
+            ref="composerRef"
             v-model="chatInput"
             class="composer__input"
             type="textarea"
@@ -458,15 +488,25 @@
           </button>
         </div>
 
-        <!-- 多模态：本轮附带的图片缩略图，随 /run 请求发出。 -->
+        <!-- 多模态：本轮附带的图片缩略图，随 /run 请求发出。点击缩略图可放大预览。 -->
         <div v-if="attachedImages.length > 0" class="composer__images">
-          <div v-for="image in attachedImages" :key="image.id" class="composer__image">
-            <img :src="image.dataUrl" :alt="image.name" />
+          <div v-for="(image, index) in attachedImages" :key="image.id" class="composer__image">
+            <el-image
+              class="composer__image-thumb"
+              :src="image.dataUrl"
+              :alt="image.name"
+              fit="cover"
+              :preview-src-list="attachedImages.map((item) => item.dataUrl)"
+              :initial-index="index"
+              hide-on-click-modal
+              preview-teleported
+              :title="`点击预览 ${image.name}`"
+            />
             <button
               type="button"
               class="composer__image-remove"
               :title="`移除 ${image.name}`"
-              @click="removeAttachedImage(image.id)"
+              @click.stop="removeAttachedImage(image.id)"
             >
               ×
             </button>
@@ -662,7 +702,141 @@ const errorDialogVisible = ref(false);
 const storeState = ref<A2UIStoreState | null>(null);
 /** 交给 vue 的 render() 作为挂载容器的元素。 */
 const previewRef = ref<HTMLElement | null>(null);
+/** 输入框组件实例，选取元素后把焦点还回去，让用户接着打字。 */
+const composerRef = ref<{ focus?: () => void } | null>(null);
 let unsubscribe: (() => void) | undefined;
+
+/**
+ * 「选择元素」模式。
+ *
+ * 开启后点击预览里的组件，把它的 componentId 以 `@id` 加进对话输入框 ——
+ * 用户指代界面元素的最短路径（「把 @city 的字号调大」），省得用语言描述位置。
+ *
+ * id 从哪来：`a2ui-vue` 的 `withRootId` 给每个组件根元素加了
+ * `id = surfaceId-componentId`（模板实例再带 itemKey 后缀），所以点击取值
+ * 不需要给渲染器加任何埋点。
+ */
+const picking = ref(false);
+/** 当前悬停高亮的元素（class 由 JS 直接加，重渲染后自然失效，无需清理 store）。 */
+let hoveredEl: HTMLElement | null = null;
+
+const clearHover = (): void => {
+  hoveredEl?.classList.remove('a2ui-pick-hover');
+  hoveredEl = null;
+};
+
+const togglePicking = (): void => {
+  picking.value = !picking.value;
+  if (!picking.value) {
+    clearHover();
+  }
+};
+
+/**
+ * DOM id → 协议里的 componentId；解析不出来返回 null。
+ *
+ * 两种形态：`surfaceId-componentId`（常规）与 `surfaceId-componentId-itemKey`
+ * （List 模板的每个实例）。后者要逐级去掉末尾段，直到命中 hydrateNodeMap 的
+ * 登记键 —— 引用模板组件（`itemCard`）比引用某个实例（`itemCard-h1`）更可操作：
+ * 模型只能改模板定义，改不了「第 3 个实例」。
+ *
+ * 解析不到就**放弃**（返回 null），不要退化成「把 DOM id 原样当 componentId」——
+ * 预览里若混进别处带 id 的元素（浏览器插件、调试节点），那样会往输入框塞一个模型
+ * 根本不认识的假 id。
+ */
+const componentIdOf = (domId: string): string | null => {
+  const prefix = `${activeSurfaceId.value}-`;
+  const rest = domId.startsWith(prefix) ? domId.slice(prefix.length) : domId;
+  const nodes = storeState.value?.hydrateNodeMap ?? {};
+
+  if (rest in nodes) {
+    return rest;
+  }
+  const segments = rest.split('-');
+  while (segments.length > 1) {
+    segments.pop();
+    const candidate = segments.join('-');
+    if (candidate in nodes) {
+      return candidate;
+    }
+  }
+  return null;
+};
+
+/** 悬停高亮：只加 class，不碰 Vue 管理的 DOM 结构。 */
+const onPreviewHover = (event: MouseEvent): void => {
+  if (!picking.value) {
+    return;
+  }
+  const el = (event.target as HTMLElement | null)?.closest<HTMLElement>('[id]') ?? null;
+  if (el === hoveredEl) {
+    return;
+  }
+  clearHover();
+  hoveredEl = el;
+  el?.classList.add('a2ui-pick-hover');
+};
+
+/**
+ * 选取：截获点击 → 取 componentId → 以 @id 追加进输入框 → 退出选取并回焦。
+ *
+ * **Alt/Option + 点击**是免开关的快捷路径：不用先点「选择元素」，按住 Alt 直接点
+ * 预览里的组件即可 —— 「快速引用某个元素」时少一步心智负担。
+ */
+const onPreviewClick = (event: MouseEvent): void => {
+  const accelerated = event.altKey;
+  if (!picking.value && !accelerated) {
+    return;
+  }
+
+  // 可选链会把 undefined 也传出来，这里用真值判断一并收掉（null 与 undefined 都代表没命中）。
+  const el = (event.target as HTMLElement | null)?.closest<HTMLElement>('[id]');
+  if (!el) {
+    return;
+  }
+
+  const componentId = componentIdOf(el.id);
+  if (componentId === null) {
+    // 不是本 surface 的组件（或解析不出来）：不拦点击，保持原有交互。
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  const token = `@${componentId}`;
+  const current = chatInput.value;
+  chatInput.value =
+    current === '' || /\s$/.test(current) ? `${current}${token}` : `${current} ${token}`;
+
+  picking.value = false;
+  clearHover();
+  composerRef.value?.focus?.();
+};
+
+// Esc 随时退出选取。监听器随选取状态挂/卸（句柄显式持有，不靠生命周期钩子兜底）。
+let pickingKeydown: ((event: KeyboardEvent) => void) | undefined;
+
+const detachPickingKeydown = (): void => {
+  if (pickingKeydown !== undefined) {
+    document.removeEventListener('keydown', pickingKeydown);
+    pickingKeydown = undefined;
+  }
+};
+
+watch(picking, (active) => {
+  // 先摘旧的再挂新的：连续开「选取 → Esc → 再选取」不会叠监听器。
+  detachPickingKeydown();
+  if (!active) {
+    return;
+  }
+  pickingKeydown = (event: KeyboardEvent): void => {
+    if (event.key === 'Escape') {
+      togglePicking();
+    }
+  };
+  document.addEventListener('keydown', pickingKeydown);
+});
 
 /**
  * 左侧舞台当前展示哪一块：预览 / Stream 模拟。
@@ -2306,6 +2480,8 @@ onBeforeUnmount(() => {
   sseController?.abort();
   // 复制反馈的定时器同理，卸载后不该再碰 copiedId。
   clearTimeout(copyResetTimer);
+  // 选取模式的 Esc 监听器（挂着才有）。
+  detachPickingKeydown();
   unsubscribe?.();
   // render() 产生的 DOM 不归本组件管，卸载时要手动清掉。
   if (previewRef.value) {
@@ -2453,10 +2629,31 @@ onBeforeUnmount(() => {
   background: #fbfdff;
 }
 
+/* 选取模式：容器内一律十字光标，暗示「这是在选择而不是在操作」。 */
+.preview--picking {
+  cursor: crosshair;
+}
+
+/*
+ * 选取模式的悬停高亮。
+ * class 由 JS 直接加在组件根元素上（a2ui-vue 的 withRootId 挂 id 的那个元素）——
+ * 不走 Vue 绑定，是因为这些 DOM 归 render() 出的树管，绑 class 会在下次重渲染时被冲掉。
+ */
+.a2ui-pick-hover {
+  outline: 2px solid #2563eb;
+  outline-offset: 1px;
+  border-radius: 3px;
+}
+
 .hint {
   margin: 0.75rem 0 0;
   color: #9ca3af;
   font-size: 0.85rem;
+}
+
+/* 选取提示用主色，跟普通灰提示区分开 —— 它表示一个「进行中的模式」。 */
+.hint--picking {
+  color: #2563eb;
 }
 
 .outline {
@@ -2962,6 +3159,9 @@ onBeforeUnmount(() => {
   flex-wrap: nowrap;
   gap: 0.4rem;
   margin-top: 0.5rem;
+  /* 上下留出余量：删除按钮定位在缩略图右上角外侧（top/right 为负），
+     不预留空间就会被这条滚动容器的裁剪边界切掉一半。 */
+  padding: 0.4rem 0.4rem 0.2rem;
   overflow-x: auto;
 }
 
@@ -2971,9 +3171,20 @@ onBeforeUnmount(() => {
   width: 3.25rem;
   height: 3.25rem;
   border-radius: 8px;
-  overflow: hidden;
+  /* 不能 overflow: hidden —— 会把右上角外溢的删除按钮裁掉；
+     圆角裁剪交给里面的 el-image 自己做。 */
   border: 1px solid #e5e7eb;
   background: #f3f4f6;
+}
+
+/* el-image 根元素：铺满缩略图格子并自己裁圆角 */
+.composer__image .el-image.composer__image-thumb {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 7px;
+  overflow: hidden;
+  cursor: zoom-in;
 }
 
 .composer__image img {
