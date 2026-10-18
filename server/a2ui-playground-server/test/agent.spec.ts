@@ -132,14 +132,37 @@ describe('agent / 门面（抽取 + 流式装配）', () => {
     assert.equal(streamed, await mock.complete(request));
   });
 
-  it('坏行变成 warning 上报，而不是静默丢掉', async () => {
-    // 这个坏行是**实测抓到的**：DeepSeek 把 surfaceUpdate 的括号多写了一个，
-    // 结果整棵组件树被丢掉，客户端却显示「已生成界面 · 2 条协议消息」，预览一片空白。
+  it('可修复的坏行（实测抓到的多括号案例）自动修复并采纳', async () => {
+    // 这个坏行是**实测抓到的**：DeepSeek 把 surfaceUpdate 的括号多写了一个。
+    // 过去它整条被丢掉、客户端却显示「已生成界面」，预览一片空白；现在 recoverJson 自动补好。
     const scripted: AgentImplementation = {
       name: 'openai',
       complete: async () => '',
       stream: async function* () {
         yield { content: '{"surfaceUpdate":{"surfaceId":"sf-1","components":[]}}}\n' };
+        yield { content: '{"beginRendering":{"surfaceId":"sf-1","root":"root"}}\n' };
+      },
+    };
+
+    const warnings: string[] = [];
+    const produced: string[] = [];
+    for await (const chunk of assembleStream(scripted.stream(requestOf()))) {
+      if (chunk.warning) warnings.push(chunk.warning);
+      if (chunk.message) produced.push(Object.keys(chunk.message)[0] ?? '');
+    }
+
+    // 修复后 surfaceUpdate 照常采纳，且不中断这一轮 —— 一次多括号不该毁掉整棵组件树。
+    assert.match(warnings[0] ?? '', /多了一个 `}`/);
+    assert.deepEqual(produced, ['surfaceUpdate', 'beginRendering']);
+  });
+
+  it('修不了的坏行变成 warning 上报，而不是静默丢掉', async () => {
+    // 截断的半行：什么括号修复都救不回来，必须显式告警且不中断整轮。
+    const scripted: AgentImplementation = {
+      name: 'openai',
+      complete: async () => '',
+      stream: async function* () {
+        yield { content: '{"surfaceUpdate":{"surfaceId":"sf-1","components":[{"id"\n' };
         yield { content: '{"beginRendering":{"surfaceId":"sf-1","root":"root"}}\n' };
       },
     };
@@ -187,13 +210,19 @@ describe('agent / 门面（抽取 + 流式装配）', () => {
 });
 
 describe('agent / 提示词', () => {
-  it('system prompt 里带上目标 surfaceId 与四条输出硬约束', () => {
+  it('system prompt 里带上目标 surfaceId 与输出硬约束', () => {
     const prompt = buildSystemPrompt('sf-42');
 
     assert.match(prompt, /sf-42/);
     assert.match(prompt, /只输出 JSONL/);
-    assert.match(prompt, /beginRendering 在最后/);
     assert.match(prompt, /恰好包含一个顶层键/);
+    // 分块流式规约：root 随第一条到达、随后立刻 beginRendering（不再压尾）
+    assert.match(prompt, /分块流式输出/);
+    assert.match(prompt, /立刻发 beginRendering/);
+    assert.match(prompt, /前向引用/);
+    // 元素引用约定：playground 点选元素后往输入框里插 @组件id
+    assert.match(prompt, /元素引用/);
+    assert.match(prompt, /@组件id/);
   });
 
   it('组件目录覆盖渲染器支持的全部 18 个组件', () => {
