@@ -22,18 +22,19 @@
 
 ## 在线体验
 
-**https://yakult.work:8443/** —— 腾讯云 Lighthouse（Ubuntu 24.04，2C2G），跑的是真实模型
+**http://82.156.76.114/** —— 腾讯云 Lighthouse（Ubuntu 24.04，2C2G），跑的是真实模型
 （DeepSeek `deepseek-flash`），不是 mock。打开就是 playground，左栏输入一句话即可生成。
 
 | 项 | 值 |
 | --- | --- |
-| 地址 | **https://yakult.work:8443/**（docker compose · 宿主 8080/8443，80/443 刻意留给后续服务） |
+| 地址 | **http://82.156.76.114/**；docker compose 栈同步跑在 **8080 / 8443**（宿主端口，需自行放通） |
 | 形态 | `a2ui-web`（nginx + 静态 + `/api` 反代）→ `a2ui-server`（Node，不发布宿主端口），compose 内网互通 |
-| 证书 | Let's Encrypt，主域 + www 一张证书，整棵 `/etc/letsencrypt` 只读挂进容器，`certbot.timer` 自动续 |
+| 证书 | 整棵 `/etc/letsencrypt` 只读挂进容器，`certbot.timer` 自动续（域名需 ICP 备案，境内实例对未备案域名会在网关层拦截） |
 | 模型 | `AGENT_PROVIDER=openai`，Key 只在服务器 `.env`（权限 600，不进仓库、不进镜像） |
-| 自检 | `curl https://yakult.work:8443/api/a2ui/scenarios`（返回 200 即前端容器 + 后端容器都通） |
+| 自检 | `curl -k https://<宿主>:8443/api/a2ui/scenarios`（返回 200 即前端容器 + 后端容器都通） |
 
-> 迁移期：宿主 nginx 仍在服务同一份代码，`https://yakult.work`（不带端口）也还能开。
+> 迁移期：宿主 nginx 仍在 80/443 服务同一份代码；容器栈的 8080/8443 要先在防火墙放通，
+> 再跑 `retire-legacy.sh` 把旧的掉线。
 
 运维命令（`sudo` 执行）：
 

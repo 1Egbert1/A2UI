@@ -31,14 +31,17 @@ if command -v ss >/dev/null 2>&1; then
 fi
 
 say "续期"
-if "$CERTBOT" renew --standalone --http-01-port 80 "$@" \
+# --no-random-sleep-on-renew：不加的话 certbot 会随机 sleep 最多 8 分钟（把负载摊开用的），
+# 手动跑的时候看起来就像卡死了。systemd timer 里同样需要它。
+
+if "$CERTBOT" renew --standalone --http-01-port 80 --no-random-sleep-on-renew "$@" \
     --deploy-hook "docker compose exec -T web nginx -s reload"; then
   :
 else
   # 迁移期兜底：宿主 nginx 还没下线时 80 被它占着，standalone 起不来，
   # 但那时原来的 webroot（/var/www/a2ui）正好还能被它服务，退回去照样能续。
   warn "standalone 失败，回退到 webroot 方式（仅当宿主 nginx 仍在服务 /var/www/a2ui 时有效）"
-  "$CERTBOT" renew "$@" --deploy-hook "docker compose exec -T web nginx -s reload"
+  "$CERTBOT" renew --no-random-sleep-on-renew "$@" --deploy-hook "docker compose exec -T web nginx -s reload"
 fi
 
 say "当前证书"
