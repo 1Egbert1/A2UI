@@ -103,6 +103,8 @@ services:
     environment:
       # Caddyfile 里用 {$A2UI_CERT_NAME} 取这个值
       A2UI_CERT_NAME: ${A2UI_CERT_NAME:-}
+      # 域名站点用的证书目录名（备案通过后域名才可达，证书已就位）
+      A2UI_DOMAIN_CERT_NAME: ${A2UI_DOMAIN_CERT_NAME:-}
       # 别让 Caddy 往容器外暴露 admin 接口（默认只监听容器内 127.0.0.1:2019）
       CADDY_ADMIN: 127.0.0.1:2019
     volumes:

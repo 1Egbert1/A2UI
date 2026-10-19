@@ -40,11 +40,17 @@
 	# }
 }
 
-# ---- 备案完成后：换成域名站点 ----
-# 打开下面这段（并把上面 `:443` 的整块删掉），Caddy 会自动申请/续期证书：
+# ---- 域名站点（已配好，等备案放行就能用）----
+# 用显式 `tls <证书文件>` 而不是让 Caddy 自动申证书：域名未备案时，
+# ACME 的 HTTP-01/TLS-ALPN 校验会被境内网关拦掉，自动签发只会一直失败刷日志。
+# 站点地址写成 `https://xxx` 而不是裸域名，是为了不让 Caddy 再自动生成一份 :80 的跳转站
+# （:80 已经有了上面那个 catch-all）。
 #
-# yakult.work, www.yakult.work {
-# 	reverse_proxy web:80 {
-# 		flush_interval -1
-# 	}
-# }
+# 备案通过后，把 tls 那行删掉 → Caddy 就会自动申请并自动续期（最省事的终态）。
+https://yakult.work, https://www.yakult.work {
+	tls /etc/letsencrypt/live/{$A2UI_DOMAIN_CERT_NAME}/fullchain.pem /etc/letsencrypt/live/{$A2UI_DOMAIN_CERT_NAME}/privkey.pem
+
+	reverse_proxy web:80 {
+		flush_interval -1
+	}
+}

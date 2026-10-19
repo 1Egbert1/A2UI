@@ -120,6 +120,13 @@ volumes:
 **别只挂 `live/<域名>`**：那个目录里全是软链（`fullchain.pem -> ../../archive/.../fullchain1.pem`），
 单独挂进去就是一堆断链，表现为「明明有证书，容器却降级成了 HTTP-only」。这个坑踩过。
 
+网关里其实有**两个站点块**：
+
+- `:443`（兜底）→ 用 IP 证书，管 `https://<IP>/` 这类直连
+- `https://yakult.work, https://www.yakult.work` → 用域名证书，**已经配好了**，
+  但域名未备案，公网进不来（本机 `curl --resolve yakult.work:443:127.0.0.1` 是 200，
+  证明服务端没问题，卡在网络层）。备案通过后把该块的 `tls` 行删掉，Caddy 就自动申证书+续期。
+
 现在**证书给网关用**（Caddyfile 里 `tls /etc/letsencrypt/live/{$A2UI_CERT_NAME}/...`），
 a2ui 的 web 容器故意不挂证书、只跑纯 HTTP —— 它要是也启 TLS 就会去抢 443，和网关打架。
 
