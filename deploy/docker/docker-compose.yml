@@ -1,0 +1,99 @@
+# A2UI 的容器编排：web（nginx + 静态）+ server（Node）。
+#
+# 两条刻意为之的设计：
+#   1. **宿主端口默认 8080 / 8443**，不占 80/443 —— 那两条留给后续服务或统一网关。
+#      要改就改同目录 .env 里的 A2UI_HTTP_PORT / A2UI_HTTPS_PORT，不用动这个文件。
+#   2. **server 不发布宿主端口**，只在 compose 内网里被 web 按服务名访问（http://server:3000），
+#      Node 进程彻底不出网，少一个暴露面。
+#
+# 常用命令（在本目录执行）：
+#   cp .env.example .env && vim .env     # 填 A2UI_SERVER_NAME 与模型 Key
+#   docker compose up -d --build         # 构建并启动
+#   docker compose logs -f web server    # 看日志
+#   docker compose ps                    # 看状态与端口
+#
+# 证书：A2UI_CERT_DIR 指向宿主机上 fullchain.pem / privkey.pem 所在的目录（只读挂进容器）。
+# 挂不到证书也能跑，web 的 entrypoint 会自动降级成 HTTP-only。
+
+name: a2ui
+
+services:
+  server:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      target: server
+      args:
+        # 国内机器换成 https://registry.npmmirror.com 能快一个数量级
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+    image: a2ui-server:local
+    container_name: a2ui-server
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      # 下面几项都给空串当缺省 —— 服务端用 `||` 兜底，空串等价于「没配」
+      AGENT_PROVIDER: ${AGENT_PROVIDER:-mock}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-}
+      OPENAI_TEMPERATURE: ${OPENAI_TEMPERATURE:-}
+      CHAT_SYSTEM_PROMPT: ${CHAT_SYSTEM_PROMPT:-}
+      HISTORY_LIMIT: ${HISTORY_LIMIT:-}
+      SESSION_TTL_MS: ${SESSION_TTL_MS:-}
+      MOCK_STREAM_DELAY_MS: ${MOCK_STREAM_DELAY_MS:-}
+      SCENARIO_CHUNK_SIZE: ${SCENARIO_CHUNK_SIZE:-}
+      AGENT_ICON_TOOLS: ${AGENT_ICON_TOOLS:-}
+    expose:
+      - "3000"
+    restart: unless-stopped
+    networks:
+      - a2ui
+    healthcheck:
+      # 用 node 自带 fetch（Node 22），不额外装 curl/wget
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  web:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      target: web
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+    image: a2ui-web:local
+    container_name: a2ui-web
+    depends_on:
+      server:
+        condition: service_healthy
+    ports:
+      # 左边是宿主端口（可改），右边是容器内固定端口
+      - "${A2UI_HTTP_PORT:-8080}:80"
+      - "${A2UI_HTTPS_PORT:-8443}:443"
+    environment:
+      # nginx 的 server_name：域名多个就写空格分隔，兜底加 _ 接住其它 Host
+      A2UI_SERVER_NAME: ${A2UI_SERVER_NAME:-_}
+      # 对外 https 端口，用来拼 http→https 的跳转（443 时自动省略）
+      A2UI_PUBLIC_HTTPS_PORT: ${A2UI_HTTPS_PORT:-8443}
+      # 证书目录名（/etc/letsencrypt/live 下的那个文件夹名）
+      A2UI_CERT_NAME: ${A2UI_CERT_NAME:-yakult.work}
+    volumes:
+      # 整棵 /etc/letsencrypt 挂进去，而不是只挂 live/<域名>：
+      # live/ 里全是**指向 ../../archive/ 的软链**，只挂 live 目录的话容器内全是断链，
+      # 表现为「明明有证书，entrypoint 却判成没证书、降级成 HTTP-only」。
+      - "${A2UI_CERT_ROOT:-/etc/letsencrypt}:/etc/letsencrypt:ro"
+      # 给宿主 certbot 写 ACME 校验文件用（容器只读；不挂也能跑，只是续期得走 --standalone）
+      - "${A2UI_ACME_DIR:-/var/www/a2ui-acme}:/var/www/acme:ro"
+    restart: unless-stopped
+    networks:
+      - a2ui
+
+networks:
+  a2ui:
+    driver: bridge

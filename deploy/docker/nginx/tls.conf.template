@@ -1,0 +1,79 @@
+# 容器内有证书时用的配置（由 entrypoint.d/10-a2ui-conf.sh 渲染）
+#
+# 占位符只有两个，且用 envsubst 显式指定，避免把 nginx 自己的 $host / $request_uri 吃掉：
+#   ${A2UI_SERVER_NAME}    server_name 的值（如 `yakult.work www.yakult.work _`）
+#   ${A2UI_HTTPS_SUFFIX}   对外 https 端口的后缀：宿主发布在 443 时为空串，否则形如 `:8443`
+#   ${A2UI_CERT_NAME}      /etc/letsencrypt/live 下的证书目录名
+#
+# 容器内固定听 80/443；宿主端口由 compose 的 ports 决定，所以跳转里必须带 ${A2UI_HTTPS_SUFFIX}。
+
+# ---------------- 80：只做 ACME 校验 + 跳转 ----------------
+server {
+    listen 80;
+    server_name ${A2UI_SERVER_NAME};
+
+    # 证书续期用（certbot --webroot -w /var/www/acme）。容器把该目录挂给宿主，
+    # 续期时宿主的 certbot 写文件、容器直接读，不用停服务。
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/acme;
+        default_type text/plain;
+    }
+
+    location / {
+        return 301 https://$host${A2UI_HTTPS_SUFFIX}$request_uri;
+    }
+}
+
+# ---------------- 443：站点本体 ----------------
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name ${A2UI_SERVER_NAME};
+
+    ssl_certificate     /etc/letsencrypt/live/${A2UI_CERT_NAME}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${A2UI_CERT_NAME}/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # 上传图片走 base64 塞在 JSON 里，稍放宽一点
+    client_max_body_size 20m;
+
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+    gzip_min_length 1k;
+
+    # ---- 前端 ----
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    location ~* \.(js|css|woff2|png|jpg|svg)$ {
+        expires 7d;
+        add_header Cache-Control "public, immutable";
+        try_files $uri =404;
+    }
+
+    # ---- 后端（容器网络里按服务名访问） ----
+    location /api/ {
+        proxy_pass http://server:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection        '';
+
+        # ★ 生成接口是 SSE，这三行缺一不可：
+        #   buffering off —— 否则 nginx 会攒够 buffer 才下发，前端表现为“最后一次性出现”
+        #   cache off     —— SSE 不能被缓存
+        #   read_timeout  —— 模型思考模式下整轮可能 30s+，默认 60s 有时不够
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+}

@@ -1,0 +1,32 @@
+# Docker 构建上下文刻意收窄：只把源码送进去，本地产物/依赖/环境文件都不进镜像。
+# 少了这一层，上下文会有几百 MB（node_modules 206M + 各包 dist），构建光传输就慢一倍。
+
+# 依赖与产物（镜像里重新装、重新构建）
+**/node_modules
+**/dist
+**/.vite
+**/*.tsbuildinfo
+
+# 版本控制与工具
+.git
+.gitattributes
+.ua
+.workbuddy
+.vscode
+.idea
+
+# 环境与密钥（绝不进镜像）
+**/.env
+**/.env.*
+!**/.env.example
+deploy/docker/.env
+
+# 文档与截图（不影响构建）
+docs/assets
+**/*.md
+!deploy/docker/README.md
+
+# 本地产物
+*.log
+**/.DS_Store
+Thumbs.db

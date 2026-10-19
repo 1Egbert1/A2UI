@@ -1,6 +1,130 @@
 # 部署说明（腾讯云 Lighthouse / 任意 Linux 单机）
 
-## 拓扑
+两种方式，**默认走 docker compose**：
+
+| 方式 | 适用 | 端口 | 章节 |
+| --- | --- | --- | --- |
+| **A. docker compose** | 线上在用；要跟其它服务共存 | 宿主 8080 / 8443（可改） | [下面](#方式-adocker-compose推荐) |
+| B. 裸机 nginx + pm2 | 不能跑 Docker 的机器；或作为回退 | 宿主 80 / 443 | [见后文](#方式-b裸机-nginx--pm2如需回退或没有-docker) |
+
+---
+
+## 方式 A：docker compose（推荐）
+
+### 拓扑
+
+```
+Internet :8080 / :8443          ← 刻意不占 80/443，留给后续服务或统一网关
+   │
+   ▼
+┌──────────────── a2ui-web（nginx:alpine 容器）────────────────┐
+│  8080 → 301 到 https（带 :8443）                              │
+│  8443 → TLS 终止 + 静态 /usr/share/nginx/html                 │
+│         /api/ → http://server:3000（compose 内网，按服务名）  │
+└──────────────────────────┬───────────────────────────────────┘
+                           │  a2ui 网络（bridge，server 不发布宿主端口）
+                           ▼
+              a2ui-server（node:22-alpine 容器，:3000）
+                    └── 模型 Key 由 compose 的 environment 注入
+```
+
+两个镜像：`a2ui-web`（约 76 MB）和 `a2ui-server`（约 490 MB）。
+把 Node 单独放一个容器、且**不发布宿主端口**，好处是 Node 进程彻底不出网，
+nginx reload 也不会打断正在跑的 SSE 流。
+
+### 一键启动
+
+```bash
+cd /opt/a2ui/deploy/docker
+sudo cp .env.example .env
+sudo vim .env          # 必改三项：A2UI_SERVER_NAME / A2UI_CERT_NAME / OPENAI_API_KEY
+sudo bash up.sh        # build → up → 等 server healthy → 自检
+```
+
+`.env` 里跟端口有关的三行：
+
+```ini
+A2UI_HTTP_PORT=8080        # 宿主 http（容器内是 80）
+A2UI_HTTPS_PORT=8443       # 宿主 https（容器内是 443）
+A2UI_SERVER_NAME="yakult.work www.yakult.work _"
+```
+
+### 为什么不占 80/443
+
+```yaml
+ports:
+  - "${A2UI_HTTP_PORT:-8080}:80"
+  - "${A2UI_HTTPS_PORT:-8443}:443"
+```
+
+左边是宿主、右边是容器。想改成别的端口只动 `.env`，不用碰 compose 文件，也不用重建镜像。
+80/443 空出来给后面的服务或统一网关；等到有网关了，把网关的 upstream 指到
+`127.0.0.1:8443` 就能恢复「不带端口」的访问。
+
+> ⚠️ 换端口后记得在 **Lighthouse 控制台 → 防火墙** 放通新端口，只在本机 curl 通不算数。
+
+### 证书：整棵 `/etc/letsencrypt` 挂进去
+
+```yaml
+volumes:
+  - "${A2UI_CERT_ROOT:-/etc/letsencrypt}:/etc/letsencrypt:ro"
+```
+
+**别只挂 `live/<域名>`**：那个目录里全是软链（`fullchain.pem -> ../../archive/.../fullchain1.pem`），
+单独挂进去就是一堆断链，表现为「明明有证书，容器却降级成了 HTTP-only」。这个坑踩过。
+
+容器启动时 `entrypoint.d/10-a2ui-conf.sh` 会做一次判断：
+
+- `live/<A2UI_CERT_NAME>/fullchain.pem` 在 → 用 TLS 模板（80 跳转 + 443 站点）
+- 不在 → 用 HTTP-only 模板，站点照样能跑
+
+所以**没证书也能 `up`**，拿到证书后重启 web 容器即自动切换。
+
+### 更新
+
+```bash
+# 代码同步到 /opt/a2ui 之后
+cd /opt/a2ui/deploy/docker && sudo bash up.sh
+```
+
+`up.sh` 是幂等的（`build` + `up -d`），改了源码就重建镜像；只改 `.env` 不必重建，
+`docker compose up -d` 会带着新环境变量重建容器。
+
+### 证书续期（容器化后要换姿势）
+
+以前宿主 nginx 占着 80，certbot 走 `--webroot` 把校验文件写到 `/var/www/a2ui` 就行。
+现在站点在容器里、宿主 80 空着，所以改用 `--standalone`：
+
+```bash
+sudo bash /opt/a2ui/deploy/docker/renew-cert.sh --dry-run   # 演练
+sudo bash /opt/a2ui/deploy/docker/renew-cert.sh             # 真续
+```
+
+续完会自动 `docker compose exec -T web nginx -s reload`（证书是挂载进去的，
+但 nginx 只在启动时读一次，不 reload 不生效）。
+
+`certbot.timer` 每天跑两次，它的 `certbot.service` 已被覆盖成调用上面这个脚本，
+见 `/etc/systemd/system/certbot.service.d/use-venv.conf`。
+
+> 将来如果有网关占了 80，`--standalone` 会起不来 —— 那时让网关把
+> `/.well-known/acme-challenge/` 代理到本栈的 8080，或者改用 DNS-01。
+
+### 从裸机方式迁过来 / 回退
+
+容器跑通（宿主 `curl -k https://127.0.0.1:8443/` 返回 200）**且公网放通新端口**之后，再下线旧的一套：
+
+```bash
+sudo bash /opt/a2ui/deploy/docker/retire-legacy.sh
+```
+
+它只 `disable` 不删东西：nginx 的包和站点配置都留着，pm2 的进程定义也留着。
+回退命令脚本末尾会打印（本质是 `systemctl enable --now nginx` + `pm2 start deploy/ecosystem.config.cjs`）。
+
+---
+
+## 方式 B：裸机 nginx + pm2（如需回退，或没有 Docker）
+
+### 拓扑
 
 ```
 Internet :80 / :443
@@ -20,12 +144,21 @@ Internet :80 / :443
 | 项 | 要求 | 说明 |
 |---|---|---|
 | 系统 | Ubuntu 20.04+ / Debian 11+ / CentOS 8+ | `bootstrap.sh` 两种包管理器都认 |
-| Node | **>= 22**（`engines` 要求） | bootstrap 会装 22 LTS |
-| pnpm | 9+ | 通过 corepack 启用（与 lockfile 版本对齐） |
-| nginx | 任意 | 反代 + 静态 |
-| pm2 | 任意 | 进程守护 |
-| 端口 | **80（+443）** | Lighthouse 控制台 → 防火墙需放通；默认已开 80/443 |
-| 磁盘 | ≥ 2 GB | `node_modules` 较大（element-plus + MCP SDK） |
+| Docker | 24+ / compose v2 | 方式 A 需要：`apt install docker.io docker-compose-v2` |
+| Node | **>= 22**（`engines` 要求） | 方式 B 需要；方式 A 在镜像里装 |
+| pnpm | 9+ | 同上 |
+| nginx / pm2 | 任意 | 仅方式 B |
+| 端口 | A：**8080/8443**；B：**80/443** | Lighthouse 控制台 → 防火墙需放通 |
+| 磁盘 | ≥ 2 GB | 镜像另需约 600 MB |
+
+> 国内机器拉镜像会超时（`dial tcp ...:443: i/o timeout`）。先配镜像加速：
+> ```bash
+> sudo tee /etc/docker/daemon.json <<'EOF'
+> { "registry-mirrors": ["https://mirror.ccs.tencentyun.com"] }
+> EOF
+> sudo systemctl restart docker
+> ```
+> 构建时再从 `.env` 里把 `NPM_REGISTRY` 指到国内源（`deploy/docker/.env.example` 里有）。
 
 ## 一次性初始化
 
@@ -159,8 +292,12 @@ systemctl list-timers certbot.timer
 
 | 现象 | 排查 |
 |---|---|
-| **域名 http 能开、https 打不开** | 按顺序查三件：① `sudo ss -lntp \| grep :443` 有没有 nginx；② TCP 探 443 是超时还是 RST（见上表）；③ `openssl x509 -in /etc/letsencrypt/live/<域名>/fullchain.pem -noout -enddate` 证书在不在。三样都对还打不开，才看浏览器报的错 |
-| 打开是 502 | `pm2 logs a2ui-server`；确认 `dist/index.js` 存在、`.env` 可读 |
+| **`docker compose build` 卡在 `failed to resolve source metadata` / i/o timeout** | 拉不到 Docker Hub。配镜像加速（见上文 daemon.json），`systemctl restart docker` 后重试 |
+| **日志说「未找到证书 → HTTP-only 模式」，但宿主上证书明明在** | 只挂了 `live/<域名>` 目录。那里全是软链，必须整棵挂 `/etc/letsencrypt`（见上文） |
+| 换了证书/域名，容器里还是旧的 | nginx 只在启动时读证书与配置：`docker compose restart web`（续期脚本已自动 reload） |
+| 宿主 curl 通、公网打不开 8080/8443 | Lighthouse 控制台 → 防火墙放通对应 TCP 端口；用 TCP 探针区分「被丢包（超时）」与「没监听（RST）」 |
+| **域名 http 能开、https 打不开** | 按顺序查三件：① `sudo ss -lntp \| grep :443` 有没有监听；② TCP 探 443 是超时还是 RST（见上表）；③ `openssl x509 -in /etc/letsencrypt/live/<域名>/fullchain.pem -noout -enddate` 证书在不在。三样都对还打不开，才看浏览器报的错 |
+| 打开是 502 | `pm2 logs a2ui-server` / `docker compose logs server`；确认 `dist/index.js` 存在、模型 Key 已注入 |
 | **`/api` 返回 404 且响应头是 `Server: Caddy`** | **80 被镜像预装的 Caddy 占了**，nginx 根本没起来（`systemctl status nginx` 会显示 `bind() 98: Address already in use`）。`sudo systemctl disable --now caddy && sudo systemctl start nginx`。恢复 Caddy：`sudo systemctl enable --now caddy` |
 | 页面能开但生成无反应 | 浏览器 Network 看 `/api/a2ui/run`：应为 **SSE**（`text/event-stream`）。若一直 pending 后断开，检查 nginx 是否漏了 `proxy_buffering off` |
 | 场景列表 500 | 说明 core 的构建产物没生成：`ls packages/a2ui-core/dist/mock`，缺了就重跑 `pnpm --filter a2ui-core build` |

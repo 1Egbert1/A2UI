@@ -22,28 +22,33 @@
 
 ## 在线体验
 
-**https://yakult.work/** —— 腾讯云 Lighthouse（Ubuntu 24.04，2C2G），跑的是真实模型
+**https://yakult.work:8443/** —— 腾讯云 Lighthouse（Ubuntu 24.04，2C2G），跑的是真实模型
 （DeepSeek `deepseek-flash`），不是 mock。打开就是 playground，左栏输入一句话即可生成。
 
 | 项 | 值 |
 | --- | --- |
-| 地址 | **https://yakult.work/**（Let's Encrypt 证书，主域 + www 都在一张证书里，自动续期；http 301 到 https） |
-| 形态 | nginx 静态站 + `/api` 反代 → Node 服务（pm2 守护），前后端同域 |
-| 模型 | `AGENT_PROVIDER=openai`，Key 只在服务器 `.env`（权限 600，不进仓库） |
-| 自检 | `curl https://yakult.work/api/a2ui/scenarios`（返回 200 即前后端都通） |
+| 地址 | **https://yakult.work:8443/**（docker compose · 宿主 8080/8443，80/443 刻意留给后续服务） |
+| 形态 | `a2ui-web`（nginx + 静态 + `/api` 反代）→ `a2ui-server`（Node，不发布宿主端口），compose 内网互通 |
+| 证书 | Let's Encrypt，主域 + www 一张证书，整棵 `/etc/letsencrypt` 只读挂进容器，`certbot.timer` 自动续 |
+| 模型 | `AGENT_PROVIDER=openai`，Key 只在服务器 `.env`（权限 600，不进仓库、不进镜像） |
+| 自检 | `curl https://yakult.work:8443/api/a2ui/scenarios`（返回 200 即前端容器 + 后端容器都通） |
+
+> 迁移期：宿主 nginx 仍在服务同一份代码，`https://yakult.work`（不带端口）也还能开。
 
 运维命令（`sudo` 执行）：
 
 ```bash
-sudo bash /opt/a2ui/deploy/deploy.sh   # 更新代码并重新发布：拉码 → 装依赖 → 构建 → 发布 → 重启 → 自检
-sudo pm2 logs a2ui-server              # 看日志
-sudo pm2 restart a2ui-server           # 只重启服务
-sudo systemctl reload nginx            # 改过 nginx 配置后
-sudo bash /opt/a2ui/deploy/setup-tls.sh --domain yakult.work,www.yakult.work   # 重签/切换 HTTPS
+cd /opt/a2ui/deploy/docker
+sudo bash up.sh                        # 构建 + 启动 + 自检（幂等，改完代码就跑它）
+sudo docker compose ps                 # 容器状态与端口
+sudo docker compose logs -f web server # 看日志
+sudo docker compose restart web        # 只重启 nginx（改了证书/配置）
+sudo docker compose down               # 停栈（保留镜像）
+sudo bash renew-cert.sh                # 证书续期（自动 reload 容器内 nginx）
+sudo bash retire-legacy.sh             # 下线旧的宿主 nginx + pm2，释放 80/443
 ```
 
-完整部署步骤、HTTPS（含「境内服务器 + 未备案域名会被网关拦截」这个坑）与排障表见
-[`deploy/README.md`](./deploy/README.md)。
+完整部署步骤、端口/证书/续期细节与排障表见 [`deploy/README.md`](./deploy/README.md)。
 
 ## 项目架构
 
