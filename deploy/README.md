@@ -44,12 +44,16 @@ sudo bash up.sh        # build → up → 等 server healthy → 自检
 `.env` 里跟端口有关的三行：
 
 ```ini
-A2UI_HTTP_PORT=8080        # 宿主 http（容器内是 80）
-A2UI_HTTPS_PORT=8443       # 宿主 https（容器内是 443）
-A2UI_SERVER_NAME="yakult.work www.yakult.work _"
+A2UI_HTTP_PORT=80          # 宿主 http（容器内固定 80）
+A2UI_HTTPS_PORT=443        # 宿主 https（容器内固定 443）
+A2UI_SERVER_NAME="_"       # 用域名就填 "example.com www.example.com _"
+A2UI_CERT_NAME=82.156.76.114   # /etc/letsencrypt/live 下的目录名
 ```
 
-### 为什么不占 80/443
+端口选法见下一节（选 8080/8443 就一定要先放通防火墙）。当前线上用的是 **80/443 + IP 证书**：
+域名未备案、被网关拦，只能靠 IP 访问。
+
+### 端口怎么选（这一步最容易把站点搞挂）
 
 ```yaml
 ports:
@@ -57,11 +61,25 @@ ports:
   - "${A2UI_HTTPS_PORT:-8443}:443"
 ```
 
-左边是宿主、右边是容器。想改成别的端口只动 `.env`，不用碰 compose 文件，也不用重建镜像。
-80/443 空出来给后面的服务或统一网关；等到有网关了，把网关的 upstream 指到
-`127.0.0.1:8443` 就能恢复「不带端口」的访问。
+左边是宿主、右边是容器，改端口只动 `.env`，不用碰 compose 文件也不用重建镜像。
 
-> ⚠️ 换端口后记得在 **Lighthouse 控制台 → 防火墙** 放通新端口，只在本机 curl 通不算数。
+| 选法 | 好处 | 代价 |
+| --- | --- | --- |
+| `8080 / 8443`（不占默认端口） | 80/443 留给后续服务或统一网关 | **必须先去 Lighthouse 控制台放通 8080、8443** |
+| `80 / 443` | 云主机默认就开着，迁移零等待 | 占了默认端口 |
+
+> **真实事故（2026-10-19）**：容器绑的是 8080/8443，防火墙只开了 80/443，
+> 而 `retire-legacy.sh` 当时只验了 `127.0.0.1:8443`（容器活着 → 通过），
+> 旧 nginx 一停，站点就从公网消失了。现在脚本加了一段**公网自检**：
+> 用 hairpin 回环打 `https://<公网IP>:<端口>/`，不通就拒绝执行并给出两条出路。
+> 教训是：**云防火墙在实例外面，只有打到公网地址才验得到。**
+
+### 证书续期用的 webroot
+
+容器占着 80 时 `--standalone` 抢不到端口，所以 `renew-cert.sh` 会退回 webroot 方式，
+写文件到宿主 `/var/www/a2ui-acme`（`A2UI_ACME_DIR`），容器把它只读挂在 `/var/www/acme`，
+由 nginx 的 `/.well-known/acme-challenge/` 吐出去。**改过 ACME 目录就要同步改
+`/etc/letsencrypt/renewal/<证书名>.conf` 里的 `webroot_path`**，否则续期会 404。
 
 ### 证书：整棵 `/etc/letsencrypt` 挂进去
 
@@ -111,7 +129,8 @@ sudo bash /opt/a2ui/deploy/docker/renew-cert.sh             # 真续
 
 ### 从裸机方式迁过来 / 回退
 
-容器跑通（宿主 `curl -k https://127.0.0.1:8443/` 返回 200）**且公网放通新端口**之后，再下线旧的一套：
+容器跑通之后再下线旧的一套（脚本会自动做两段自检：本机 127.0.0.1，以及**公网 IP + 端口**；
+公网那段不通会直接拒绝执行，避免重演“旧的停了、新的外面进不来”）：
 
 ```bash
 sudo bash /opt/a2ui/deploy/docker/retire-legacy.sh

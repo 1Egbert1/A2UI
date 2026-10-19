@@ -22,19 +22,20 @@
 
 ## 在线体验
 
-**http://82.156.76.114/** —— 腾讯云 Lighthouse（Ubuntu 24.04，2C2G），跑的是真实模型
+**https://82.156.76.114/** —— 腾讯云 Lighthouse（Ubuntu 24.04，2C2G），跑的是真实模型
 （DeepSeek `deepseek-flash`），不是 mock。打开就是 playground，左栏输入一句话即可生成。
 
 | 项 | 值 |
 | --- | --- |
-| 地址 | **http://82.156.76.114/**；docker compose 栈同步跑在 **8080 / 8443**（宿主端口，需自行放通） |
+| 地址 | **https://82.156.76.114/**（docker compose，容器占 80/443；换端口改 `.env` 里两行即可） |
 | 形态 | `a2ui-web`（nginx + 静态 + `/api` 反代）→ `a2ui-server`（Node，不发布宿主端口），compose 内网互通 |
-| 证书 | 整棵 `/etc/letsencrypt` 只读挂进容器，`certbot.timer` 自动续（域名需 ICP 备案，境内实例对未备案域名会在网关层拦截） |
+| 证书 | Let's Encrypt **IP 证书**（7 天，`certbot.timer` 自动续，浏览器无告警）。整棵 `/etc/letsencrypt` 只读挂进容器 |
 | 模型 | `AGENT_PROVIDER=openai`，Key 只在服务器 `.env`（权限 600，不进仓库、不进镜像） |
-| 自检 | `curl -k https://<宿主>:8443/api/a2ui/scenarios`（返回 200 即前端容器 + 后端容器都通） |
+| 自检 | `curl https://82.156.76.114/api/a2ui/scenarios`（返回 200 即前端容器 + 后端容器都通） |
 
-> 迁移期：宿主 nginx 仍在 80/443 服务同一份代码；容器栈的 8080/8443 要先在防火墙放通，
-> 再跑 `retire-legacy.sh` 把旧的掉线。
+> 域名 `yakult.work` 的证书也签好了，但**境内实例对未备案域名会在网关层拦截**
+> （http 302 到 dnspod webblock、https 按 SNI 直接 reset），所以现在用 IP 访问。
+> 备案完成后把 `.env` 的 `A2UI_SERVER_NAME` / `A2UI_CERT_NAME` 换成域名并重启 web 容器即可。
 
 运维命令（`sudo` 执行）：
 
