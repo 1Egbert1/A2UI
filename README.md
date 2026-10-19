@@ -27,15 +27,16 @@
 
 | 项 | 值 |
 | --- | --- |
-| 地址 | **https://82.156.76.114/**（docker compose，容器占 80/443；换端口改 `.env` 里两行即可） |
-| 形态 | `a2ui-web`（nginx + 静态 + `/api` 反代）→ `a2ui-server`（Node，不发布宿主端口），compose 内网互通 |
-| 证书 | Let's Encrypt **IP 证书**（7 天，`certbot.timer` 自动续，浏览器无告警）。整棵 `/etc/letsencrypt` 只读挂进容器 |
+| 地址 | **https://82.156.76.114/**（docker compose；80/443 归网关独占，后续服务走 `127.0.0.1:<端口>` 由网关分流） |
+| 形态 | `a2ui-gateway`（Caddy，唯一占 80/443）→ `a2ui-web`（nginx，只绑 `127.0.0.1:8080`）→ `a2ui-server`（Node，仅内网） |
+| 证书 | Let's Encrypt **IP 证书**（7 天，`certbot.timer` 自动续 + `caddy reload`，浏览器无告警）。整棵 `/etc/letsencrypt` 只读挂进网关 |
 | 模型 | `AGENT_PROVIDER=openai`，Key 只在服务器 `.env`（权限 600，不进仓库、不进镜像） |
 | 自检 | `curl https://82.156.76.114/api/a2ui/scenarios`（返回 200 即前端容器 + 后端容器都通） |
 
 > 域名 `yakult.work` 的证书也签好了，但**境内实例对未备案域名会在网关层拦截**
 > （http 302 到 dnspod webblock、https 按 SNI 直接 reset），所以现在用 IP 访问。
-> 备案完成后把 `.env` 的 `A2UI_SERVER_NAME` / `A2UI_CERT_NAME` 换成域名并重启 web 容器即可。
+> 备案完成后：把 `caddy/Caddyfile` 里的域名站点块打开（Caddy 会自己申证书）、
+> 删掉 `:443` 那段，然后 `caddy reload` 即可，不需要改 a2ui。
 
 运维命令（`sudo` 执行）：
 
@@ -44,9 +45,10 @@ cd /opt/a2ui/deploy/docker
 sudo bash up.sh                        # 构建 + 启动 + 自检（幂等，改完代码就跑它）
 sudo docker compose ps                 # 容器状态与端口
 sudo docker compose logs -f web server # 看日志
-sudo docker compose restart web        # 只重启 nginx（改了证书/配置）
+sudo docker compose restart gateway    # 只重启网关（改了 Caddyfile/证书）
+sudo docker compose exec gateway caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile  # 无中断重载
 sudo docker compose down               # 停栈（保留镜像）
-sudo bash renew-cert.sh                # 证书续期（自动 reload 容器内 nginx）
+sudo bash renew-cert.sh                # 证书续期（自动 reload 网关）
 sudo bash retire-legacy.sh             # 下线旧的宿主 nginx + pm2，释放 80/443
 ```
 

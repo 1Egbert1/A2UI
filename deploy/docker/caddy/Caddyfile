@@ -1,0 +1,50 @@
+# A2UI 的入口网关（Caddy）。
+#
+# 为什么要有这一层：
+#   80/443 是全局唯一的资源，谁先绑谁独占。之前 a2ui 的容器直接吃 80/443，
+#   再来第二个服务就必然 bind 失败。把 80/443 交给网关之后：
+#     - 网关是唯一占默认端口的东西，其余服务全部退到 127.0.0.1:<端口>
+#     - 加服务 = 在下面加一段 reverse_proxy，不用改 a2ui、不用开新防火墙端口
+#     - 证书、HTTP→HTTPS、gzip、SSE 缓冲这些横切关注点只在这一个地方配置
+#
+# 当前用的是「服务器上已有的 Let's Encrypt 证书」，不让 Caddy 自己签：
+#   域名还没 ICP 备案，境内实例会在网关层拦掉 ACME 的 HTTP-01/TLS-ALPN 校验，
+#   自动签发只会一直失败刷日志。等备案完成，把下面注释里的域名站点块打开、
+#   删掉 `:443` 那段，Caddy 就会自己申证书并自动续期。
+
+# ---- HTTP：一律跳 HTTPS ----
+# 顺手也覆盖了 ACME 校验：LE 会跟随这个 308 到 https 去取文件（下面反代到 web）
+:80 {
+	redir https://{host}{uri} 308
+}
+
+# ---- HTTPS：反代到 a2ui 的 web 容器（容器网络里叫 web，它是纯 HTTP 的）----
+:443 {
+	# {$A2UI_CERT_NAME} 由 compose 注入（对应 /etc/letsencrypt/live 下的目录名）
+	tls /etc/letsencrypt/live/{$A2UI_CERT_NAME}/fullchain.pem /etc/letsencrypt/live/{$A2UI_CERT_NAME}/privkey.pem
+
+	# ★ SSE：flush_interval -1 关掉响应缓冲。
+	#   不关的话「生成」接口会被攒着一次性下发，前端就看不到逐块长出来了。
+	reverse_proxy web:80 {
+		flush_interval -1
+	}
+
+	# ---- 以后加服务的两种写法，随便挑 ----
+	# 1) 按路径分流（同一个域名下）：
+	# handle_path /other/* {
+	# 	reverse_proxy host.docker.internal:8081
+	# }
+	# 2) 按 Host 分流：另起一个站点块
+	# other.example.com {
+	# 	reverse_proxy host.docker.internal:8081
+	# }
+}
+
+# ---- 备案完成后：换成域名站点 ----
+# 打开下面这段（并把上面 `:443` 的整块删掉），Caddy 会自动申请/续期证书：
+#
+# yakult.work, www.yakult.work {
+# 	reverse_proxy web:80 {
+# 		flush_interval -1
+# 	}
+# }

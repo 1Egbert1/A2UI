@@ -14,65 +14,94 @@
 ### 拓扑
 
 ```
-Internet :8080 / :8443          ← 刻意不占 80/443，留给后续服务或统一网关
+Internet :80 / :443
    │
    ▼
-┌──────────────── a2ui-web（nginx:alpine 容器）────────────────┐
-│  8080 → 301 到 https（带 :8443）                              │
-│  8443 → TLS 终止 + 静态 /usr/share/nginx/html                 │
-│         /api/ → http://server:3000（compose 内网，按服务名）  │
-└──────────────────────────┬───────────────────────────────────┘
-                           │  a2ui 网络（bridge，server 不发布宿主端口）
+┌──────── a2ui-gateway（caddy:2-alpine，唯一占 80/443 的进程）────────┐
+│  :80  → 308 跳 https                                                │
+│  :443 → TLS 终止（复用宿主 /etc/letsencrypt 里的证书）              │
+│         reverse_proxy web:80  (flush_interval -1，SSE 不缓冲)        │
+│  以后加服务：再来一段 reverse_proxy host.docker.internal:8081         │
+└──────────────────────────┬──────────────────────────────────────────┘
+                           │  a2ui 网络（bridge）
                            ▼
-              a2ui-server（node:22-alpine 容器，:3000）
+┌──────── a2ui-web（nginx:alpine，纯 HTTP，只绑 127.0.0.1:8080）──────┐
+│  /      → /usr/share/nginx/html（playground 的 vite 产物）           │
+│  /api/  → http://server:3000                                        │
+└──────────────────────────┬──────────────────────────────────────────┘
+                           ▼
+              a2ui-server（node:22-alpine，:3000，不发布宿主端口）
                     └── 模型 Key 由 compose 的 environment 注入
 ```
 
-两个镜像：`a2ui-web`（约 76 MB）和 `a2ui-server`（约 490 MB）。
-把 Node 单独放一个容器、且**不发布宿主端口**，好处是 Node 进程彻底不出网，
-nginx reload 也不会打断正在跑的 SSE 流。
+三个容器、两个镜像（`a2ui-web` 约 76 MB、`a2ui-server` 约 490 MB）。
+
+关键是**端口所有权**：80/443 只归 gateway 一个进程，a2ui 自己退到宿主回环
+`127.0.0.1:8080`。这样再加多少服务都不会撞端口，也不用每加一个就开一条防火墙规则 ——
+外部流量一律从网关进来。Node 更是完全不发布宿主端口，只剩内网可达。
 
 ### 一键启动
 
 ```bash
 cd /opt/a2ui/deploy/docker
 sudo cp .env.example .env
-sudo vim .env          # 必改三项：A2UI_SERVER_NAME / A2UI_CERT_NAME / OPENAI_API_KEY
+sudo vim .env          # 必改：A2UI_CERT_NAME（/etc/letsencrypt/live 下的目录名）、OPENAI_API_KEY
 sudo bash up.sh        # build → up → 等 server healthy → 自检
 ```
 
-`.env` 里跟端口有关的三行：
+`.env` 里跟端口/证书有关的几行：
 
 ```ini
-A2UI_HTTP_PORT=80          # 宿主 http（容器内固定 80）
-A2UI_HTTPS_PORT=443        # 宿主 https（容器内固定 443）
-A2UI_SERVER_NAME="_"       # 用域名就填 "example.com www.example.com _"
-A2UI_CERT_NAME=82.156.76.114   # /etc/letsencrypt/live 下的目录名
+A2UI_HTTP_PORT=80              # 网关占的宿主 http
+A2UI_HTTPS_PORT=443            # 网关占的宿主 https
+A2UI_WEB_BIND=127.0.0.1:8080   # a2ui web 只绑回环
+A2UI_CERT_NAME=82.156.76.114   # /etc/letsencrypt/live 下的目录名（网关用它终止 TLS）
 ```
 
-端口选法见下一节（选 8080/8443 就一定要先放通防火墙）。当前线上用的是 **80/443 + IP 证书**：
-域名未备案、被网关拦，只能靠 IP 访问。
+端口怎么分配见下一节。当前线上是 **80/443（网关）+ 127.0.0.1:8080（a2ui）+ IP 证书**：
+域名未备案被网关拦，暂时只能靠 IP 访问。
 
-### 端口怎么选（这一步最容易把站点搞挂）
+### 端口所有权：80/443 只给网关
 
 ```yaml
-ports:
-  - "${A2UI_HTTP_PORT:-8080}:80"
-  - "${A2UI_HTTPS_PORT:-8443}:443"
+# gateway —— 唯一占默认端口的东西
+ports: ["${A2UI_HTTP_PORT:-80}:80", "${A2UI_HTTPS_PORT:-443}:443"]
+
+# web —— 只绑宿主回环，外界碰不到
+ports: ["${A2UI_WEB_BIND:-127.0.0.1:8080}:80"]
 ```
 
-左边是宿主、右边是容器，改端口只动 `.env`，不用碰 compose 文件也不用重建镜像。
+`127.0.0.1:` 这个前缀别省。少了它就等于绑 `0.0.0.0`，又回到「一个端口只能一个进程」的老问题。
 
-| 选法 | 好处 | 代价 |
-| --- | --- | --- |
-| `8080 / 8443`（不占默认端口） | 80/443 留给后续服务或统一网关 | **必须先去 Lighthouse 控制台放通 8080、8443** |
-| `80 / 443` | 云主机默认就开着，迁移零等待 | 占了默认端口 |
+### 加一个新服务
 
-> **真实事故（2026-10-19）**：容器绑的是 8080/8443，防火墙只开了 80/443，
-> 而 `retire-legacy.sh` 当时只验了 `127.0.0.1:8443`（容器活着 → 通过），
+不用动 a2ui 的任何配置，两步：
+
+```bash
+# 1) 新服务只绑回环（示例：宿主 8081）
+ports: ["127.0.0.1:8081:80"]
+```
+
+```
+# 2) 在 deploy/docker/caddy/Caddyfile 里加一段（按路径或按域名）
+handle_path /other/* {
+	reverse_proxy host.docker.internal:8081
+}
+# 或者
+other.example.com {
+	reverse_proxy host.docker.internal:8081
+}
+```
+
+改完 `docker compose exec gateway caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile`
+（无中断），不用开新的防火墙端口。`host.docker.internal` 已通过 `extra_hosts: host-gateway`
+指向宿主（实测解析到 `172.17.0.1`）。
+
+> **真实事故（2026-10-19）**：在还没有网关的时候，容器直接绑 8080/8443，
+> 而防火墙只开了 80/443；`retire-legacy.sh` 又只验了 `127.0.0.1:8443`（容器活着 → 通过），
 > 旧 nginx 一停，站点就从公网消失了。现在脚本加了一段**公网自检**：
-> 用 hairpin 回环打 `https://<公网IP>:<端口>/`，不通就拒绝执行并给出两条出路。
-> 教训是：**云防火墙在实例外面，只有打到公网地址才验得到。**
+> 用 hairpin 回环打 `https://<公网IP>:<端口>/`，不通就拒绝执行。
+> 教训：**云防火墙在实例外面，只有打到公网地址才验得到。**
 
 ### 证书续期用的 webroot
 
@@ -91,12 +120,11 @@ volumes:
 **别只挂 `live/<域名>`**：那个目录里全是软链（`fullchain.pem -> ../../archive/.../fullchain1.pem`），
 单独挂进去就是一堆断链，表现为「明明有证书，容器却降级成了 HTTP-only」。这个坑踩过。
 
-容器启动时 `entrypoint.d/10-a2ui-conf.sh` 会做一次判断：
+现在**证书给网关用**（Caddyfile 里 `tls /etc/letsencrypt/live/{$A2UI_CERT_NAME}/...`），
+a2ui 的 web 容器故意不挂证书、只跑纯 HTTP —— 它要是也启 TLS 就会去抢 443，和网关打架。
 
-- `live/<A2UI_CERT_NAME>/fullchain.pem` 在 → 用 TLS 模板（80 跳转 + 443 站点）
-- 不在 → 用 HTTP-only 模板，站点照样能跑
-
-所以**没证书也能 `up`**，拿到证书后重启 web 容器即自动切换。
+web 容器启动时 `entrypoint.d/10-a2ui-conf.sh` 仍会按证书有无选模板，所以**没有证书也能 `up`**
+（走 HTTP-only）；拿到证书后重启容器即自动切换。
 
 ### 更新
 
@@ -118,8 +146,8 @@ sudo bash /opt/a2ui/deploy/docker/renew-cert.sh --dry-run   # 演练
 sudo bash /opt/a2ui/deploy/docker/renew-cert.sh             # 真续
 ```
 
-续完会自动 `docker compose exec -T web nginx -s reload`（证书是挂载进去的，
-但 nginx 只在启动时读一次，不 reload 不生效）。
+续完会自动调 `deploy/docker/reload-edge.sh`：优先 `caddy reload`（无中断），
+没有网关时退回 `nginx -s reload`。证书是挂载进去的，但进程只在启动时读一次，不 reload 不生效。
 
 `certbot.timer` 每天跑两次，它的 `certbot.service` 已被覆盖成调用上面这个脚本，
 见 `/etc/systemd/system/certbot.service.d/use-venv.conf`。
@@ -313,7 +341,7 @@ systemctl list-timers certbot.timer
 |---|---|
 | **`docker compose build` 卡在 `failed to resolve source metadata` / i/o timeout** | 拉不到 Docker Hub。配镜像加速（见上文 daemon.json），`systemctl restart docker` 后重试 |
 | **日志说「未找到证书 → HTTP-only 模式」，但宿主上证书明明在** | 只挂了 `live/<域名>` 目录。那里全是软链，必须整棵挂 `/etc/letsencrypt`（见上文） |
-| 换了证书/域名，容器里还是旧的 | nginx 只在启动时读证书与配置：`docker compose restart web`（续期脚本已自动 reload） |
+| 换了证书/域名，容器里还是旧的 | 边缘进程只在启动/ reload 时读证书：`docker compose restart gateway`（续期脚本会自动 `caddy reload`） |
 | 宿主 curl 通、公网打不开 8080/8443 | Lighthouse 控制台 → 防火墙放通对应 TCP 端口；用 TCP 探针区分「被丢包（超时）」与「没监听（RST）」 |
 | **域名 http 能开、https 打不开** | 按顺序查三件：① `sudo ss -lntp \| grep :443` 有没有监听；② TCP 探 443 是超时还是 RST（见上表）；③ `openssl x509 -in /etc/letsencrypt/live/<域名>/fullchain.pem -noout -enddate` 证书在不在。三样都对还打不开，才看浏览器报的错 |
 | 打开是 502 | `pm2 logs a2ui-server` / `docker compose logs server`；确认 `dist/index.js` 存在、模型 Key 已注入 |
