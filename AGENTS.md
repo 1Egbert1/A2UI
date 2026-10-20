@@ -91,8 +91,3 @@ docs/                     服务端、组件协议、样式扩展、本地动作
 deploy/                   docker compose（gateway / web / server）+ 脚本
 specification/v0_8/       上游协议快照（只读）
 ```
-
-## 9. 一处已知技术债
-
-`packages/a2ui-vue/src/index.ts` 导出的 `createA2UIRenderer` 是抛异常的占位实现，仓库内无人调用。
-要新增公共 API 时先确认它是该删还是该实现，别照着它的形状扩展。
