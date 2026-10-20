@@ -1,157 +1,120 @@
-# A2UI 项目定位分析：亮点、与 Google 方案的差异、以及可发掘的空间
+# A2UI 项目定位分析：对标 A2UI Composer
 
-> 结论先行：这个项目的价值不在「协议比 Google 强」，而在**把一份协议做成了能跑、能调、能评、能上线的完整链路**，并且把「模型生成 UI 的质量」当成工程问题来处理。协议层它是消费方，工程层它是实现方。
-
----
-
-## 一、一句话定位
-
-**Google 定义「agent 怎么描述 UI」，这个项目回答「拿到这些描述之后，怎么让它真的长出来、还长得不歪」。**
+> 比较对象先对齐：上一版我对比的是 Google 的**协议仓库**；你要对比的是 **A2UI Composer**（`a2ui-composer.ag-ui.com/workbench`，CopilotKit 驱动）。两边都跑 A2UI 协议，但**不是同一物种**——一个是「做 A2UI 的工具」，一个是「用 A2UI 做出来的应用」。
+>
+> 结论先行：**它解决「怎么写出一段合法的 A2UI」，我们解决「怎么让这段 A2UI 在真实产品里跑起来」。** 真正的硬伤只有一个：**两边的 JSON 方言不通**。
 
 ---
 
-## 二、这个项目实际做到了什么
+## 一、Composer 是什么
 
-按职责切片，不是按目录罗列：
+从它的导航就能看出定位：
 
-| 层 | 做了什么 | 关键位置 |
+| 模块 | 作用 |
+| --- | --- |
+| **Create** | 输入一句话 → 生成 A2UI（`Powered by CopilotKit`） |
+| **Workbench** | `Chat · edit · preview · debug`，右侧常驻「Current data model」面板 |
+| **Gallery** | 成品案例集 |
+| **Basic Catalog / Custom Catalog** | 组件目录浏览（属性、默认值、预览） |
+| **Icons** | 图标浏览 |
+| **Theater** | JSONL Playback：`Pretty / Wire` 双视图 + React renderer 回放 |
+
+一句话：**它是 A2UI 的浏览器 IDE**。产物是「一段 JSON / 一个可粘贴进 agent prompt 的目录说明」，交付边界到此为止。
+
+## 二、我们是什么
+
+**一个可部署的 A2UI 运行时**：Koa 服务端接真实模型 → 分块流式产出 JSONL → Vue 渲染器边收边画 → Playground 调试 → 容器 + 网关上线。
+
+产物是「一个能对外服务的站点」，不是一段 JSON。
+
+---
+
+## 三、形态差异（先看这张表，后面的优劣都从这里长出来）
+
+| 维度 | A2UI Composer | 本项目 |
 | --- | --- | --- |
-| 协议消费 | 实现 A2UI v0.8.2 的四条消息、adjacency list、data binding、surface | `packages/a2ui-core/src/parser/` |
-| 渲染 | 18 个组件的 Vue3 渲染器 + 组件级样式扩展 | `packages/a2ui-vue/src/renderers/`、`internal/styles.ts` |
-| 生成 | prompt 单一来源、分块流式规约、模型输出抽取与容错、图标 MCP | `server/a2ui-playground-server/src/agent/` |
-| 服务 | 单入口 + 双传输（SSE / JSON）、场景注册表、会话缓存 | `src/routes/index.ts` |
-| 调试 | 双栏 Playground、Stream 两种模拟、预览点选回填 `@id` | `web/a2ui-playground/src/App.vue` |
-| 质量 | 26 条带机检断言的评测集，覆盖 18 组件 + 19 类特性 | `server/.../eval/a2ui-eval-set.json` |
-| 交付 | 三容器 + Caddy 网关 + 证书续期，可复制上线 | `deploy/docker/` |
+| 交付形态 | 浏览器工具，免安装 | 全栈应用，自带 Docker + Caddy 网关 |
+| 谁跑模型 | CopilotKit 的通道（模型与 Key 不在你手里） | 你自己配：DeepSeek 直连 / 任意 OpenAI 兼容网关 / 离线 mock |
+| 产出物 | A2UI JSON、可粘贴的 prompt 片段 | 一个跑起来的站点 + SSE 流 + 会话 |
+| 目标用户 | 做 A2UI 的开发者（写协议、调组件、做 demo） | 终端用户（对话出界面）+ 开发团队（要上线） |
+| 渲染器 | React（Theater 里的 renderer 可选） | Vue3（18 组件） |
+| 协议方言 | 当前主线（`component` 为字符串 + 属性平铺） | **v0.8.2**（`component` 为单键对象包裹） |
+| 数据来源 | 工具内编辑 / 生成 | 真实模型 + 场景注册表 + 多轮会话 |
 
-这条链路是完整的：**协议 → 解析 → 渲染 → 生成 → 调试 → 评测 → 部署**。Google 的官方仓库给的是 `spec + renderers + samples`，这里是「一个能交付的应用」。
+**最关键的一条**：两边 JSON 不兼容。Composer 的 Basic Catalog 里 `Row` 长这样：
 
----
+```json
+{ "id": "row-1", "component": "Row", "align": "center", "justify": "spaceBetween", "children": ["child-1", "child-2"] }
+```
 
-## 三、六个真正的亮点
+我们的 v0.8.2 是：
 
-### 1. 流式体验做成了「边收边长」，而且是三层配合
+```json
+{ "id": "row-1", "component": { "Row": { "align": "center", "justify": "spaceBetween", "children": { "explicitList": ["child-1", "child-2"] } } } }
+```
 
-规范只要求 "progressive rendering"，没给实现路径。这里拆成三层：
-
-- **生成侧**：prompt 强制分块——root 放第一条 `surfaceUpdate`，发完立刻 `beginRendering`，后续每 3~8 个组件一条，root 的子 id 允许**前向引用**尚未到达的区块（`prompt-template.ts` L29-37）。
-- **解析侧**：`createA2UIBuffer` 用括号配对取完整值，**不等整条 surfaceUpdate 收完**，每有一个组件闭合就补成一条完整消息（`parser/buffer.ts` L844）。
-- **渲染侧**：`scheduler` 把密集刷新合帧，每帧只做一次全量重算（`core/scheduler`）。
-
-为什么难：多数实现是「等 JSON 完整 → 一次性渲染」，首屏等于模型总耗时。这里是「第一个区块到了就能看」。
-
-### 2. 把「LLM 会写坏 JSON」当成一等问题
-
-`agent/extract.ts` 的 `recoverJson` 不是简单 `JSON.parse` 兜底，而是**结构化候选 + 唯一判据**：
-
-① 结尾按括号栈补齐 → ② 删报错位置 1~2 个多余闭合符 → ③ **闭合符互换**（`]` 写成 `}`）→ ④ 报错位置前插闭合符或逗号 → ⑤ 按栈迭代修补最多 4 轮（治连写错两处）。
-
-每条候选必须过 `acceptRecovered`：能 parse **且**至少一条过 `validateMessage`。截断的报文直接放弃，不硬修。
-
-为什么难：它没有按 V8 报错文案加分支（同一种括号错在不同位置文案不同），而是按结构收敛。这是把「模型不稳定」当成协议的一部分来设计。
-
-### 3. 组件级样式扩展，补上了 v0.8 最实际的缺口
-
-v0.8 只有 surface 级 `font` / `primaryColor`，生成出来的界面千篇一律。这里加了组件级 `styles`：
-
-- 42 条属性白名单（颜色、间距、圆角、阴影…），键名归一、纯数字补 `px`、白名单外**静默忽略**（防止模型乱造 CSS）
-- 收口在 `a2ui-vue/src/internal/styles.ts` + `node.ts` 的 `withRootId`，用 `cloneVNode(node, { style })` 合入 —— **一处收口，18 个组件全覆盖**
-
-### 4. 本地动作：给「纯前端交互」留了一条不回服务端的路
-
-协议原本只有「客户端事件回传服务端」。这里用 `Button.action.type: "local"` 扩展出本地分支：`local[]` 操作被模拟成 `updateModel` 写回数据模型，由同一次合帧刷新把界面与数据对齐（`docs/a2ui-local-action-extension.md`）。
-
-意义：开关、步进器这类交互不该为了改一个数字跑一次模型。
-
-### 5. 图标走 MCP 按需查询，把「清单」从 prompt 里赶出去
-
-`Icon` 要填 Element Plus 的真实导出名，几百个名字塞进 prompt 会挤爆上下文。这里挂了个图标 MCP（`searchIcons` / `getIcon` / `listIcons`），带 ~130 条中文别名（「购物车」→ `ShoppingCart`），模型**生成前按需查**，清单不进 system prompt（`src/agent/tools/`）。
-
-这是「用工具调用替代上下文灌注」的典型用法，比在 prompt 里贴一张大表优雅。
-
-### 6. 评测集：把「生成得好不好」变成可回归的东西
-
-26 条用例，10 基础 / 10 业务 / 5 进阶 / 1 对抗，每条带可机检断言，覆盖 18 个组件和 19 类特性（前向引用、`valueMap`、`List + template`、多轮增量、多模态复刻、空状态、长输出、分块流式…）。业务场景是订单、点餐、酒店、看板、播放器、健身、课表、工单、智能家居、招聘。
-
-为什么重要：改 prompt 是高风险动作，没有评测集就只能靠肉眼。
+组件名从「对象的唯一键」变成了「字符串字段」，props 从嵌套变成平铺，`children` 也换了形状。**Composer 导出的东西，我们的解析器直接吃会全部判非法。**
 
 ---
 
-## 四、和 Google 那套到底是什么关系
+## 四、我们的六个亮点（以及 Composer 的对应物）
 
-先摆事实（截至 2026-10）：Google 的版本线是 **v0.8（legacy，已关闭）→ v0.9（prompt-first 重构）→ v0.9.1（current）→ v1.0（RC）**。这个项目锁定在 **v0.8.2**，也就是已经停止开发的上一代。
-
-| 维度 | Google A2UI | 本项目 |
+| 亮点 | 我们做了什么 | Composer 那边 |
 | --- | --- | --- |
-| 角色 | 协议制定者 + 参考实现 | 协议消费方 + 端到端应用 |
-| 版本 | v0.9.1 为当前版，v1.0 RC 已发 | 锁定 v0.8.2（已 closed） |
-| 渲染器 | React / Lit / Angular / Flutter / Markdown | **只有 Vue3（18 组件）** |
-| Catalog | v0.8 有 §2.1 协商；v0.9 支持 custom catalogs | **未实现**，组件集写死在 prompt 里 |
-| 流式 | 规范要求 progressive；v0.9 SDK 提供 incremental JSON healing | 自研三层（分块 prompt + 括号配对解析 + 合帧） |
-| 样式 | v0.8 仅 surface 级；v1.0 引入 `surfaceProperties` | **组件级 42 属性白名单** |
-| 交互 | `userAction` 回传；v0.9 客户端函数；v1.0 `actionResponse` | `userAction` + **本地动作扩展** |
-| 传输 | A2A / AG-UI / MCP / WS / REST 皆可 | 自建 SSE + AG-UI 事件语义 |
-| 调试/评测 | Composer / Theater / Demo | Playground（点选、流模拟、多轮）+ **26 条评测** |
-
-### 一个值得注意的巧合
-
-v0.9 的哲学转向叫 **Prompt-First**（让模型按提示词自由生成，而不是死抠结构化输出）。而这个项目在 v0.8 上做的事——分块 prompt 规约、前向引用、抽取容错——**方向与 prompt-first 完全一致**，等于提前一年走到了同一判断上。区别在于：Google 把它写进了协议（`createSurface` + 客户端函数 + 自定义 catalog），这里还停留在「项目内的工程约定」。
+| **流式是运行时主链路** | 分块 prompt（root 先到 + 提前 `beginRendering` + 前向引用）→ 括号配对解析（组件闭合即渲染）→ 合帧调度。生成、解析、渲染三层配合 | Theater 把 JSONL 当**回放对象**（调试用）；我们的流式是**生产路径** |
+| **模型输出容错** | `recoverJson`：结构化候选 + 唯一判据（括号栈补齐 / 删多余闭合符 / 闭合符互换 / 插符 / 迭代修补），且必须过 `validateMessage` | 工具场景下人可以手动改，不需要这层；线上跑就绕不过 |
+| **组件级样式 42 属性白名单** | 颜色/间距/圆角/阴影可调，白名单外静默忽略，收口在一处 | Basic Catalog 只描述结构属性（`align`/`justify`），不管视觉 |
+| **图标按需查询（MCP）** | 模型生成前调 `searchIcons/getIcon`，中文别名（「购物车」→ `ShoppingCart`），清单不进 prompt | 有 **Icons 浏览页**（人查），模型不会自己查 |
+| **真实业务闭环** | 场景注册表 + 会话缓存 + 多轮增量 + 预览点选回填 `@id` | Workbench 有 chat 与 data model 面板，偏「单次编辑」 |
+| **可回归的质量** | 26 条带机检断言的评测集（10 基础/10 业务/5 进阶/1 对抗，18 组件 / 19 类特性） | 工具不需要评测集；产品线必须有 |
 
 ---
 
-## 五、优势（经得起追问的四条）
+## 五、真正的优势（四条）
 
-1. **开箱即用的完整度**。官方给规范和渲染器，要自己接 agent、接传输、搭调试界面、写部署。这里 `pnpm dev` 就能跑通两条链路，还带容器化上线路径。
-2. **生成质量的工程化**。抽取容错 + 分块规约 + 评测集，这一套是「让模型稳定产出合法 UI」的核心，而它在协议之外——**任何版本都用得上**。
-3. **中文链路 + Vue 技术栈**。直连 DeepSeek、中文业务用例、Vue3 渲染器。Google 的生态（Gemini / ADK / CopilotKit）在国内不可用，官方也没有 Vue 渲染器。
-4. **表达力上的局部超车**。组件级样式（42 属性）和本地动作，是 v0.8 明显欠缺、而实际产品必须有的两样东西。
+1. **能上线，且能私有化。** Composer 是别人的 SaaS，模型通道也在别人手里；我们这个可以装在自己服务器上、接自己的模型和 Key。对国内团队这不是加分项，是硬门槛。
+2. **模型链路自主。** DeepSeek 直连、provider 可换、可离线 mock 跑通全链路。Composer 用不了你的模型，也没法在无网环境跑。
+3. **Vue 生态。** 官方与 Composer 的渲染侧都是 React；国内前端主流是 Vue，这块是空白位。
+4. **质量工程是可迁移资产。** 分块规约 + 抽取容错 + 评测集，和协议版本解耦——协议升级它们还在，Composer 这类工具则天然没有。
 
-## 六、短板（不粉饰）
+## 六、硬伤（不粉饰）
 
-1. **协议落后一个大版本**。v0.9 是破坏性重构：`createSurface`、prompt-first、`surfaceProperties`、客户端函数、自定义 catalog。升级不是改字段，是重写生成侧与渲染侧的一部分。
-2. **没有 catalog 协商**。换一套设计系统要改 prompt。这是「可移植性」的命门，也是 v0.9 花大力气解决的事。
-3. **单 surface、无客户端函数、无 actionResponse**。复杂产品界面（弹窗叠层、协同编辑）表达不了。
-4. **数据模型没有数组**。只能用对象 map + `item` 占位路径，订单行、表格这类数据会别扭。
-5. **评测偏「结构合法性」**，缺少「渲染结果是否符合意图」的判定，且没接 CI。
-6. **单端**。只有 Vue，跨端能力为零；Google 有五套渲染器。
+1. **JSON 方言不通（最要命）。** 我们锁 v0.8.2，Composer 已按新方言产出。既不能直接渲染它的输出，也不能把我们的产物丢进它的 Workbench 调试。**这等于被排除在它建立的协作链路之外。**
+2. **没有 Catalog 概念。** Composer 有 Basic / Custom Catalog 浏览与定义；我们的组件集写死在 prompt 里，换设计系统要改提示词。
+3. **没有「数据模型可视化编辑」。** Workbench 右侧能直接改 `current data model` 看绑定效果；我们只能靠点击交互间接写回，调试靠看 raw。
+4. **回放能力不对等。** 我们只有「服务端场景逐条/字符流」，不能粘任意 JSONL 回放；Theater 是通用的。
+5. **没有 Gallery / 图标浏览页。** 缺少「先看效果再动手」的入口，新人和外部评估者上手成本更高。
+6. **单端 + 单 surface。** 只有 Vue、只有一块 surface；弹窗叠层这类产品形态表达不了。
 
 ---
 
-## 七、立足点与可发掘的方向
+## 七、可发掘的方向
 
-### 已经站稳的三个点
+### P0 — 一周内，性价比最高
 
-- **国内可用的替代方案**：不依赖 Gemini、直连 DeepSeek、中文 prompt 与中文业务场景。这是最硬的需求缺口。
-- **Vue 生态的空白位**：官方没有 Vue 渲染器，而国内前端主流是 Vue。
-- **生成质量方法论**：分块规约 + 结构化容错 + 可机检评测，这套东西与协议版本解耦，可以一直复用。
+1. **写一个 v0.8 ↔ 新版方言的双向转换器。** 这是把「硬伤 1」直接变成「兼容层」：解析器前面加一层 adapter，`component: "Row"` + 平铺 props ⇄ `component: {"Row": {...}}`。做完之后，Composer 生成的东西我们能直接渲染，我们产出的东西也能丢进它的 Workbench 验证。**这一步的信息量比迁移整个版本大得多，成本却小一个量级。**
+2. **评测集接 CI。** 26 条断言现成，只差门禁。改 prompt 必跑。
+3. **导出 `catalog.json`，prompt 由它生成。** 对标 Composer 的 Custom Catalog，同时解决「换组件库要改 prompt」。
 
-### 可以往下挖的（按性价比排序）
+### P1 — 一个月，补齐工具形态的短板
 
-**P0 — 一周内，成本低、立刻加分**
+4. **数据模型编辑器。** 一个 JSON 树面板：改值 → 实时联动预览。这是 Workbench 最好用的部分，补上之后调试体验立刻对等。
+5. **通用 JSONL 回放。** 支持粘贴任意 JSONL（不绑定服务端场景），带单步/倍速。对标 Theater。
+6. **多 surface**（Modal / 侧栏各自一块），先把最痛的产品形态解决。
 
-1. **评测集接进 CI**：26 条用现有的 assert 跑成门禁。改 prompt 必跑，防止「修一处坏三处」。
-2. **把组件集导出成 catalog.json**，prompt 由它生成。换组件库只换 catalog，不动 prompt —— 这就是 v0.8 §2.1 该有而没做的协商，成本比等 v0.9 低得多。
-3. **多 surface**：Modal、侧栏各自一个 surface，先解决最痛的一处。
+### P2 — 三到六个月，做差异化
 
-**P1 — 一个月，对齐主线**
-
-4. **迁 v0.9.1**：`createSurface` + `surfaceProperties` + 客户端函数。注意：v0.9 不规定「怎么分块」，现有分块策略可以作为实现层保留，不会白做。
-5. **客户端函数**：表单校验、格式化放客户端，减少一次模型往返。
-6. **可观测性**：首字延迟、抽取失败率、组件数、token 消耗，做成一个面板。现在这些只有日志。
-
-**P2 — 三到六个月，做差异化**
-
-7. **行业 catalog 包**：把 26 条业务用例沉淀成「电商 / 工单 / 酒店」目录，配默认 prompt 与评测。**这是别人最难复制的东西** —— 协议谁都能实现，业务目录不行。
-8. **多端**：把渲染器抽成 Web Component，或补 React / 小程序。
-9. **接 AG-UI / A2A**：现在只有自建 SSE，接标准传输才能进别人的智能体生态。
-10. **如果要做产品**：Playground 升级成「生成质量工作台」——同一句话跑多个模型 / 多版 prompt，并排对比 + 回归。
+7. **行业 catalog 包**：把 26 条里的 10 个业务场景（订单/点餐/酒店/工单/课表…）沉淀成目录 + 默认 prompt + 用例。**这是 Composer 不会做的事，也是最难复制的东西。**
+8. **迁 v0.9.1 / v1.0**：`createSurface`、`surfaceProperties`、客户端函数。有了 P0 的转换器，迁移可以分步走。
+9. **多端**：Web Component 封装，或补 React / 小程序，把「Vue 专用」变成「多端可选」。
+10. **可私有化的 A2UI 工作台**：把 Playground 做成能装进内网的工具（含 catalog 管理、模型切换、评测面板），这是 Composer 覆盖不到的市场。
 
 ---
 
 ## 八、如果只做三件事
 
-1. **评测集进 CI**（一天，立刻见效）
-2. **catalog 化**（一周，解开「换设计系统」的死结）
-3. **迁 v0.9.1**（一个月，止住技术债）
+1. **方言转换器**（一周）—— 立刻和 Composer 生态互通，把最大短板变成兼容能力
+2. **评测接 CI**（一天）—— 现有资产立刻产生约束力
+3. **catalog 化**（一周）—— 解开「换设计系统」的死结，也是升级 v0.9 的前置
 
-这三件做完，项目从「一个很好的参考实现」变成「可以长期维护的实现」。**亮点在工程，风险在版本。**
+这三件都不动协议主版本，但能让项目从「一个自己的实现」变成「能跟生态对话的实现」。**协议版本可以晚点追，互通能力不能等。**
