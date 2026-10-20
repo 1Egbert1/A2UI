@@ -1,0 +1,16 @@
+%% A2UI 渲染管线：一条协议消息如何变成页面上一棵树
+flowchart LR
+    MSG["协议消息 JSONL"] --> PARSE["parser"]
+    PARSE --> STORE["store<br/>组件表·数据模型·错误"]
+    STORE --> HYD["hydrate<br/>逐个组件生成 _vnode"]
+    REN["renderer<br/>组件类型 → 渲染函数"] --> HYD
+    BIND["binding<br/>取值对象解析"] --> HYD
+    HYD --> TREE["treebuilder<br/>按 children 建树"]
+    TREE --> MOUNT["tree-render<br/>整树挂载"]
+    SCHED["scheduler<br/>合帧刷新"] -.-> HYD
+    ACT["action<br/>本地动作写回"] -.-> STORE
+
+    classDef accent fill:#eef2ff,stroke:#c7d2fe,color:#3730a3;
+    classDef muted fill:#fbfcfe,stroke:#e4eaf2,color:#64748b;
+    class HYD accent;
+    class SCHED,ACT muted;

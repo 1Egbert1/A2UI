@@ -1,0 +1,14 @@
+%% A2UI 服务端请求管线：单入口，分流只发生在最后一刻
+flowchart TD
+    REQ["POST /api/a2ui/run"] --> IN["inbound<br/>规整入参"]
+    IN --> PREP["prepare()<br/>命中场景则改用 fixture 的 surfaceId"]
+    PREP --> Q{"query.stream"}
+    Q -->|"缺省 / true"| SSER["runA2UIStream<br/>AG-UI 事件 → encodeSse"]
+    Q -->|"false / json"| JRES["一次性 JSON"]
+    SSER --> AGENT["agent 门面<br/>scenario → fixture；否则 → provider"]
+    JRES --> AGENT
+    AGENT --> COMMIT["commit()<br/>写 history + surface 缓存"]
+    COMMIT --> SNAP["GET /session/:threadId<br/>整段回放"]
+
+    classDef accent fill:#eef2ff,stroke:#c7d2fe,color:#3730a3;
+    class Q accent;

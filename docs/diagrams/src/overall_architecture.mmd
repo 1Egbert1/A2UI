@@ -1,0 +1,40 @@
+%% A2UI 整体架构：两条来路（示例场景 / 自由输入）在服务端汇成一个出口，再走同一条渲染链路
+flowchart LR
+    U(["用户"])
+
+    subgraph WEB["web · a2ui-playground"]
+        PANEL["对话 + 示例场景下拉"]
+        STREAM["Stream 模拟"]
+        PREVIEW["渲染预览"]
+    end
+
+    subgraph SERVER["server · a2ui-playground-server"]
+        ROUTE["路由 /api/a2ui/run"]
+        SCEN["场景注册表"]
+        AGENT["agent：mock | openai"]
+        SESSION["session 缓存"]
+    end
+
+    subgraph SDK["packages · A2UI SDK"]
+        CORE["a2ui-core"]
+        VUE["a2ui-vue"]
+    end
+
+    U --> PANEL
+    U --> STREAM
+    PANEL -->|GET /scenarios| SCEN
+    PANEL -->|"POST /run（SSE）"| ROUTE
+    ROUTE --> SCEN
+    ROUTE --> AGENT
+    AGENT -.->|"SSE · AG-UI 事件流"| PANEL
+    ROUTE --- SESSION
+    PANEL -->|协议消息 JSONL| CORE
+    SCEN -.->|"fixture / 字符流"| STREAM
+    STREAM --> CORE
+    CORE --> VUE
+    VUE --> PREVIEW
+
+    classDef accent fill:#eef2ff,stroke:#c7d2fe,color:#3730a3;
+    classDef muted fill:#fbfcfe,stroke:#e4eaf2,color:#64748b;
+    class CORE,VUE accent;
+    class STREAM muted;
