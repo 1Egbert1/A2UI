@@ -66,43 +66,7 @@ monorepo（pnpm workspace）组织代码，分三层：
 
 ### 整体架构
 
-```mermaid
-flowchart LR
-    U(["用户"])
-
-    subgraph WEB["web · a2ui-playground（Vite + Vue3）"]
-        PANEL["对话 + 示例场景下拉"]
-        STREAM["Stream 模拟"]
-        PREVIEW["渲染预览"]
-    end
-
-    subgraph SERVER["server · a2ui-playground-server（Koa）"]
-        ROUTE["路由 /api/a2ui/run"]
-        SCEN["场景注册表（内置 fixture）"]
-        AGENT["agent：mock | openai"]
-        SESSION["session 缓存"]
-    end
-
-    subgraph SDK["packages · A2UI SDK"]
-        CORE["a2ui-core"]
-        VUE["a2ui-vue"]
-    end
-
-    U --> PANEL
-    U --> STREAM
-    PANEL -->|"GET /api/a2ui/scenarios"| SCEN
-    PANEL -->|"POST /run（SSE）"| ROUTE
-    ROUTE --> SCEN
-    ROUTE --> AGENT
-    AGENT -.->|"SSE · AG-UI 事件流"| PANEL
-    ROUTE --- SESSION
-    PANEL -->|"协议消息 JSONL"| CORE
-    SCEN -.->|"原始 fixture（逐条模式用）"| STREAM
-    SCEN -.->|"SSE · 原始字符流"| STREAM
-    STREAM --> CORE
-    CORE --> VUE
-    VUE --> PREVIEW
-```
+![A2UI 整体架构：用户 / web / server / SDK 四层，两条来路汇成一条渲染链路](docs/diagrams/a2ui_overall_architecture.svg)
 
 两条来路（**示例场景**与**自由输入**）在服务端汇成同一个出口，客户端也只有一条解析与渲染链路 ——
 这是整个设计里最重要的约束：加数据来源不动渲染，改渲染也不动来源。
@@ -143,18 +107,7 @@ server
 
 **渲染管线**：从一条协议消息到页面上的一棵树。
 
-```mermaid
-flowchart LR
-    MSG["协议消息 JSONL"] --> PARSE["parser"]
-    PARSE --> STORE["store<br/>组件表 / 数据模型 / 错误"]
-    STORE --> HYD["hydrate<br/>逐个组件生成 _vnode"]
-    REN["renderer<br/>组件类型 → 渲染函数"] --> HYD
-    BIND["binding<br/>取值对象解析"] --> HYD
-    HYD --> TREE["treebuilder<br/>按 children 建树"]
-    TREE --> MOUNT["tree-render<br/>整树挂载"]
-    SCHED["scheduler<br/>合帧刷新"] -.-> HYD
-    ACT["action<br/>本地动作写回"] -.-> STORE
-```
+![A2UI 渲染管线：协议消息经 parser、store、hydrate、treebuilder 到 tree-render](docs/diagrams/a2ui_render_pipeline.svg)
 
 `scheduler` 是关键的一环：`hydrate → 建树 → 重画` 是**全量**的，而流式推送可能比帧率还密，
 所以刷新被合帧成「每帧只跑一次」。`action` 的本地分支也走这条链路 —— 写回数据模型后，
@@ -225,18 +178,7 @@ Vite + Vue3 应用，通过 Vite alias 直接引用各包 `src`，改 SDK 无需
 
 **请求管线**：生成只有一个入口，分流只发生在最后一刻。
 
-```mermaid
-flowchart TD
-    REQ["POST /api/a2ui/run"] --> IN["inbound<br/>规整入参（RunAgentInput / message / scenario）"]
-    IN --> PREP["prepare()<br/>命中场景则改用 fixture 的 surfaceId"]
-    PREP --> Q{"query.stream"}
-    Q -->|"缺省 / true"| SSER["runA2UIStream<br/>AG-UI 事件 → encodeSse"]
-    Q -->|"false / 0 / no / off / json"| JRES["一次性 JSON"]
-    SSER --> AGENT2["agent 门面<br/>带 scenario → fixture；否则 → 配置的 provider"]
-    JRES --> AGENT2
-    AGENT2 --> COMMIT["commit()<br/>写 history + surface 缓存（场景不切活跃 surface）"]
-    COMMIT --> SNAP["GET /api/a2ui/session/:threadId<br/>整段回放"]
-```
+![A2UI 服务端请求管线：单入口、query.stream 处唯一分叉、prepare 与 commit 共用](docs/diagrams/a2ui_request_pipeline.svg)
 
 `prepare()` 与 `commit()` 被两条传输路径共用，所以「入参怎么解析」「缓存什么」不会因传输方式分叉。
 入参非法时 `prepare()` 会在**开流之前**抛错返回 400（符合 AG-UI：run 未开始就不能给事件流）。

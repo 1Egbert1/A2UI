@@ -34,3 +34,9 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# Understand-Anything 知识图谱（本地生成，可再生）
+.ua/
+
+# ContextWeave 绘图请求与回执（本地工作目录）
+.cw_skill/
