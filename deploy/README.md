@@ -55,11 +55,15 @@ sudo bash up.sh        # build → up → 等 server healthy → 自检
 A2UI_HTTP_PORT=80              # 网关占的宿主 http
 A2UI_HTTPS_PORT=443            # 网关占的宿主 https
 A2UI_WEB_BIND=127.0.0.1:8080   # a2ui web 只绑回环
-A2UI_CERT_NAME=82.156.76.114   # /etc/letsencrypt/live 下的目录名（网关用它终止 TLS）
+A2UI_CERT_NAME=yakult.work      # /etc/letsencrypt/live 下的目录名（网关用它终止 TLS）
 ```
 
-端口怎么分配见下一节。当前线上是 **80/443（网关）+ 127.0.0.1:8080（a2ui）+ IP 证书**：
-域名未备案被网关拦，暂时只能靠 IP 访问。
+端口怎么分配见下一节。当前线上是 **80/443（网关）+ 127.0.0.1:8080（a2ui）+ 域名证书**
+（`yakult.work` / `www`，访问入口 <https://yakult.work/>）。
+
+> 曾经因为域名被备案网关拦截，线上临时改用 **IP 证书**（`A2UI_CERT_NAME=82.156.76.114`）访问。
+> 那条路现在不建议走：IP 证书是 Let's Encrypt 的 7 天短效证书，续期依赖 `certbot.timer`，
+> 一旦没续上就是全站证书过期（当前就是过期状态）。**只要域名可用，就配域名证书。**
 
 ### 端口所有权：80/443 只给网关
 
@@ -257,7 +261,7 @@ sudo bash /opt/a2ui/deploy/deploy.sh
 # A. 有域名（推荐）——主域 + www 放一张证书里
 sudo bash /opt/a2ui/deploy/setup-tls.sh --domain yakult.work,www.yakult.work --email me@example.com
 
-# B. 只有公网 IP（无域名 / 域名没备案）
+# B. 只有公网 IP（无域名 / 域名走不通）—— 7 天短效证书，续期断了就全站过期，仅作临时兜底
 sudo bash /opt/a2ui/deploy/setup-tls.sh --ip 82.156.76.114
 
 # 防火墙还没放通 443 时先只签证书，站点继续走 80

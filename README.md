@@ -42,21 +42,20 @@
 
 ## 在线体验
 
-**https://82.156.76.114/** —— 腾讯云 Lighthouse（Ubuntu 24.04，2C2G），跑的是真实模型
+**https://yakult.work/** —— 腾讯云 Lighthouse（Ubuntu 24.04，2C2G），跑的是真实模型
 （DeepSeek `deepseek-flash`），不是 mock。打开就是 playground，左栏输入一句话即可生成。
 
 | 项 | 值 |
 | --- | --- |
-| 地址 | **https://82.156.76.114/**（docker compose；80/443 归网关独占，后续服务走 `127.0.0.1:<端口>` 由网关分流） |
+| 地址 | **https://yakult.work/**（docker compose；80/443 归网关独占，后续服务走 `127.0.0.1:<端口>` 由网关分流） |
 | 形态 | `a2ui-gateway`（Caddy，唯一占 80/443）→ `a2ui-web`（nginx，只绑 `127.0.0.1:8080`）→ `a2ui-server`（Node，仅内网） |
-| 证书 | Let's Encrypt **IP 证书**（7 天，`certbot.timer` 自动续 + `caddy reload`，浏览器无告警）。整棵 `/etc/letsencrypt` 只读挂进网关 |
+| 证书 | Let's Encrypt **域名证书**（`yakult.work` / `www`，2027-01-16 到期，`certbot.timer` 自动续 + `caddy reload`，浏览器无告警）。整棵 `/etc/letsencrypt` 只读挂进网关 |
 | 模型 | `AGENT_PROVIDER=openai`，Key 只在服务器 `.env`（权限 600，不进仓库、不进镜像） |
-| 自检 | `curl https://82.156.76.114/api/a2ui/scenarios`（返回 200 即前端容器 + 后端容器都通） |
+| 自检 | `curl https://yakult.work/api/a2ui/scenarios`（返回 200 即前端容器 + 后端容器都通） |
 
-> 域名 `yakult.work` 的证书也签好了，但**境内实例对未备案域名会在网关层拦截**
-> （http 302 到 dnspod webblock、https 按 SNI 直接 reset），所以现在用 IP 访问。
-> 备案完成后：把 `caddy/Caddyfile` 里的域名站点块打开（Caddy 会自己申证书）、
-> 删掉 `:443` 那段，然后 `caddy reload` 即可，不需要改 a2ui。
+> 历史上用 `https://<IP>/` 访问过：那时域名被备案网关拦（http 302 到 dnspod webblock、https 按 SNI 直接 reset），
+> 只能靠 IP。**现在域名的拦截已经不再出现**（`http://yakult.work` 由网关 308 跳 https，证书校验通过），
+> 而 **IP 证书是 7 天短效的，已经过期**（`https://<IP>/` 会报证书过期）——访问请统一用域名。
 
 运维命令（`sudo` 执行）：
 
