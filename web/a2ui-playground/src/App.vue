@@ -118,6 +118,26 @@
             <pre class="binding-model">{{ activeDataModelJson }}</pre>
           </details>
 
+          <!--
+            动作回执：证明「点了 → 发出去了 → 后端处理了 → 界面收到了」这条链是通的。
+            没有这块面板时，服务端动作点了和没点完全一样 —— 事件在渲染层就断了。
+          -->
+          <details v-if="actionLog.length > 0" class="fold" open>
+            <summary>动作回执 · a2ui-action → POST /api/a2ui/action</summary>
+            <ol class="action-log">
+              <li v-for="item in actionLog" :key="item.id">
+                <code>{{ item.name }}</code>
+                <span class="action-log__meta">
+                  {{ item.handledBy || '—' }} · {{ item.messageCount }} 条 · {{ item.elapsedMs }}ms
+                </span>
+                <span v-if="item.detail" class="action-log__err">{{ item.detail }}</span>
+              </li>
+            </ol>
+            <p class="action-log__hint">
+              回执消息已经 ingest 回 store：上面那块数据模型 JSON、以及绑定了该 path 的组件会立刻变化。
+            </p>
+          </details>
+
           <details v-if="treeOutline" class="fold">
             <summary>组件树 treeMap["{{ activeSurfaceId }}"].root</summary>
             <pre class="outline">{{ treeOutline }}</pre>
@@ -645,6 +665,7 @@ import {
   getA2UIStore,
   init,
   normalizeToJSONL,
+  parseA2UI,
 } from 'a2ui-core';
 import type { A2UIBuffer, A2UIStoreState, JSONLStream, TreeMap, TreeNode } from 'a2ui-core';
 // 只留 `deriveStreamOrders` 这个纯函数：示例数据本身现在**全部从服务端取**（见 `loadScenarios`），
@@ -705,6 +726,26 @@ const previewRef = ref<HTMLElement | null>(null);
 /** 输入框组件实例，选取元素后把焦点还回去，让用户接着打字。 */
 const composerRef = ref<{ focus?: () => void } | null>(null);
 let unsubscribe: (() => void) | undefined;
+
+/**
+ * 动作回执（`a2ui-action` → `POST /api/a2ui/action`）。
+ *
+ * 渲染层把服务端动作派发成冒泡的 DOM 事件，**但事件之后没人接** —— 点击就等同于没点。
+ * 这里补上宿主这半段：转发给服务端、把回来的协议消息 ingest 回 store、并把过程记在
+ * 这个列表里。记录本身也是调试手段：能一眼看出动作有没有发出去、谁处理的、回了几条消息。
+ */
+interface ActionReceipt {
+  id: string;
+  name: string;
+  status: 'ok' | 'error';
+  /** 服务端标注的处理方：注册的 handler 名，或 `fallback` / `error`。 */
+  handledBy: string;
+  messageCount: number;
+  elapsedMs: number;
+  detail: string;
+}
+const actionLog = ref<ActionReceipt[]>([]);
+const ACTION_LOG_LIMIT = 6;
 
 /**
  * 「选择元素」模式。
@@ -1529,6 +1570,77 @@ const storeStats = computed(() => {
  * 改造前是一个 `watch(treeRoot, renderPreview)`：那等于把 SDK 的调度职责抄到了宿主侧，
  * 宿主还得自己猜「建树结果变没变」。现在宿主不盯建树了，谁来画、什么时候画都归 SDK。
  */
+/**
+ * 预览区里发生的**服务端动作**：转发到后端，再把回执消息 ingest 回 store。
+ *
+ * 事件由 `a2ui-vue` 的 Button 渲染器派发（`bubbles: true`），所以监听挂在预览容器上
+ * 就能覆盖所有按钮，不必逐个挂。本地动作（`type: "local"`）不走这里 —— 它在渲染层
+ * 直接写回数据模型，本来就不需要服务端。
+ */
+const forwardPreviewAction = async (event: Event): Promise<void> => {
+  const detail = (event as CustomEvent<{ userAction?: Record<string, unknown> }>).detail;
+  const userAction = detail?.userAction;
+  const name = typeof userAction?.name === 'string' ? userAction.name : '';
+  if (!userAction || name === '') {
+    return;
+  }
+
+  const startedAt = performance.now();
+  const receipt: ActionReceipt = {
+    id: `act-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    name,
+    status: 'error',
+    handledBy: '',
+    messageCount: 0,
+    elapsedMs: 0,
+    detail: '',
+  };
+
+  // 用「产生当前界面的那个会话」，不是输入框那个：示例场景跑在 `sc-xxxx` 独立 thread 上，
+  // 拿 `serverThreadId` 去查必然 404（这个坑真踩过）。
+  const sessionId =
+    previewSource.value === 'stream' ? '' : (serverResult.value?.sessionId ?? serverThreadId.value);
+
+  if (sessionId === '') {
+    receipt.detail = 'Stream 模拟的界面来自本地 fixture，没有服务端会话，动作不回传';
+    receipt.elapsedMs = Math.round(performance.now() - startedAt);
+    actionLog.value = [receipt, ...actionLog.value].slice(0, ACTION_LOG_LIMIT);
+    return;
+  }
+
+  try {
+    const response = await fetch(`${SERVER_BASE}/api/a2ui/action`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ threadId: sessionId, userAction }),
+    });
+    const payload = (await response.json()) as {
+      handledBy?: string;
+      messageCount?: number;
+      messages?: unknown[];
+      error?: string;
+    };
+
+    if (!response.ok) {
+      receipt.detail = payload.error ?? `HTTP ${response.status}`;
+    } else {
+      receipt.status = 'ok';
+      receipt.handledBy = payload.handledBy ?? '';
+      receipt.messageCount = payload.messageCount ?? 0;
+      receipt.detail = payload.error ? `handler 报错：${payload.error}` : '';
+      // 逐条 ingest：与流式路径共用同一套分发与派生逻辑，不另开注入通道。
+      for (const message of payload.messages ?? []) {
+        parseA2UI(JSON.stringify(message));
+      }
+    }
+  } catch (error) {
+    receipt.detail = error instanceof Error ? error.message : String(error);
+  } finally {
+    receipt.elapsedMs = Math.round(performance.now() - startedAt);
+    actionLog.value = [receipt, ...actionLog.value].slice(0, ACTION_LOG_LIMIT);
+  }
+};
+
 const renderTreeIntoPreview = (treeMap: TreeMap) => {
   const container = previewRef.value;
   // 容器还没挂载时直接跳过 —— 这不代表树有问题，只是暂时没地方画。
@@ -2476,11 +2588,15 @@ onMounted(() => {
   // 场景列表到手后会自动选中默认项，`watch(scenarioId)` 随即载入它 —— 首屏的界面
   // 因此也是从服务端取回来的，与手动切换走的是同一条路。
   void loadScenarios();
+
+  // 服务端动作的出口：渲染层只管派发，传输与回执由宿主决定（见 forwardPreviewAction）。
+  previewRef.value?.addEventListener('a2ui-action', forwardPreviewAction);
 });
 
 onBeforeUnmount(() => {
   stopAuto();
   stopStreamTick();
+  previewRef.value?.removeEventListener('a2ui-action', forwardPreviewAction);
   // 在途的 SSE 读取要主动中断：否则组件已卸载它还在读，回调会去碰已卸载的响应式状态。
   // 两条流各有一句 —— 字符流那条同样会一直往 buffer 里灌。
   abortCharStream();
@@ -2701,6 +2817,40 @@ onBeforeUnmount(() => {
   font-size: 0.78rem;
   line-height: 1.55;
   color: #1f2937;
+}
+
+/* 动作回执列表：一行一条，名称等宽、附注次要色 */
+.action-log {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.78rem;
+  color: #1f2937;
+}
+
+.action-log code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: #eef2f8;
+  border-radius: 4px;
+  padding: 0.05rem 0.3rem;
+}
+
+.action-log__meta {
+  margin-left: 0.35rem;
+  color: #6b7280;
+}
+
+.action-log__err {
+  margin-left: 0.35rem;
+  color: #b42318;
+}
+
+.action-log__hint {
+  margin: 0.4rem 0 0;
+  font-size: 0.74rem;
+  color: #6b7280;
 }
 
 /* ── 工作区：左舞台 + 右聊天 ── */

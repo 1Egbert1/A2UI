@@ -14,6 +14,7 @@ import Koa from 'koa';
 import bodyParser from 'koa-bodyparser';
 import Router from 'koa-router';
 import { createA2UIAgent, type A2UIAgent } from './agent';
+import { createActionRouter, type ActionRouter } from './actions';
 import { createModelChat, type ModelChat } from './chat';
 import { loadConfig, type ServerConfig } from './config';
 import { BadRequestError, ServiceUnavailableError } from './inbound';
@@ -26,6 +27,8 @@ export interface AppOptions {
   /** 纯模型对话（`/api/a2ui/chat`）。测试可注入替身，从而不必真打模型。 */
   chat?: ModelChat;
   sessions?: SessionStore;
+  /** 动作路由。测试可注入已注册 handler 的实例，从而验证自定义业务动作。 */
+  actions?: ActionRouter;
   /** 设为 false 关掉请求日志（测试里免得刷屏）。 */
   logger?: boolean;
 }
@@ -36,6 +39,7 @@ export interface AppParts {
   agent: A2UIAgent;
   chat: ModelChat;
   sessions: SessionStore;
+  actions: ActionRouter;
 }
 
 /**
@@ -113,6 +117,9 @@ export const createApp = (options: AppOptions = {}): AppParts => {
   // 对话客户端总是按配置构造（哪怕 A2UI 那条走 mock）：它的用途就是验证模型链接。
   // 没配 Key 时它照样能造出来，只是路由层会先挡下 503 —— 报错集中在请求时，启动不炸。
   const chat = options.chat ?? createModelChat(config.openai);
+  // 默认一个 handler 都不注册：所有点击都走 fallback 回执（写 `__lastAction`），
+  // 「点一下有反应」这件事不依赖业务方接入。业务动作由集成方 `register` 覆盖。
+  const actions = options.actions ?? createActionRouter();
 
   const app = new Koa();
   const router = new Router();
@@ -123,10 +130,10 @@ export const createApp = (options: AppOptions = {}): AppParts => {
   app.use(errorHandler);
   app.use(cors);
   app.use(bodyParser());
-  registerRoutes(router, { config, agent, chat, sessions });
+  registerRoutes(router, { config, agent, chat, sessions, actions });
   app.use(router.routes());
   app.use(router.allowedMethods());
   app.use(notFound);
 
-  return { app, config, agent, chat, sessions };
+  return { app, config, agent, chat, sessions, actions };
 };

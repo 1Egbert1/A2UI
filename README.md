@@ -193,7 +193,11 @@ Vite + Vue3 应用，通过 Vite alias 直接引用各包 `src`，改 SDK 无需
    未配 Key 返回 503（开流之前），成功则流回模型原话（失败走流内 `RUN_ERROR`）。
    默认接 DeepSeek（`OPENAI_BASE_URL=https://api.deepseek.com` / `OPENAI_MODEL=deepseek-flash`），
    换网关只改 `.env`。**无状态**：多轮由调用方带全 `messages`。
-5. **缓存**：会话历史 + 按 surface 累积的协议消息，`GET /api/a2ui/session/:threadId` 可整段回放。
+6. **动作回传**：`POST /api/a2ui/action` —— 按钮点击的**另一半**。渲染层把服务端动作派发成
+   `a2ui-action` DOM 事件，宿主转发到这里；服务端按注册的 handler 产出 `dataModelUpdate` /
+   `surfaceUpdate`，客户端 ingest 回去，界面与数据模型随即变化。**没注册 handler 也有回执**
+   （写数据模型的 `__lastAction`），所以任何点击都能看到反应，而不是石沉大海。
+7. **缓存**：会话历史 + 按 surface 累积的协议消息，`GET /api/a2ui/session/:threadId` 可整段回放。
 
 **请求管线**：生成只有一个入口，分流只发生在最后一刻。
 

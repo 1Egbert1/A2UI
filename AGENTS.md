@@ -36,6 +36,7 @@ Node ≥ 22，pnpm 12.10.1。
 | 组件类型名 → 渲染函数 | `packages/a2ui-vue/src/renderMap.ts`（18 个；没登记的组件会进 `errorMap` 的 `RENDERER_NOT_FOUND`） |
 | 组件级样式白名单 | `packages/a2ui-vue/src/internal/styles.ts` 的 `STYLE_RULES`（42 条，白名单外静默忽略） |
 | 示例场景数据 | `packages/a2ui-core/mock/**`（TS 模块导出 `string[]`；服务端读的是**构建产物**） |
+| 动作 handler | `server/a2ui-playground-server/src/actions/index.ts` 的 `createActionRouter`（按动作名 `register`；路由只做转发，不写业务） |
 | 协议定义（只读） | `specification/v0_8/**`——上游规范快照，不要改它去迁就实现 |
 
 ## 4. 改动联动清单
@@ -85,7 +86,7 @@ Node ≥ 22，pnpm 12.10.1。
 packages/a2ui-core        协议引擎：parser / store / hydrate / treebuilder / tree-render / scheduler / binding / action
 packages/a2ui-vue         渲染器：renderMap + internal（node / styles / icons / entrance）
 packages/a2ui-ui-components
-server/a2ui-playground-server  Koa：routes / agent（prompt、抽取、图标 MCP）/ eval
+server/a2ui-playground-server  Koa：routes / agent（prompt、抽取、图标 MCP）/ actions（动作回传）/ eval
 web/a2ui-playground       Playground：对话、预览、Stream 模拟
 docs/                     服务端、组件协议、样式扩展、本地动作、agent prompt
 deploy/                   docker compose（gateway / web / server）+ 脚本

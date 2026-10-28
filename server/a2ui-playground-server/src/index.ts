@@ -21,6 +21,7 @@ const endpoints = [
   'POST /api/a2ui/run       (默认 SSE · AG-UI 事件流；加 ?stream=false 收一次性 JSON)',
   'POST /api/a2ui/generate  (= run?stream=false 的固定别名)',
   'POST /api/a2ui/chat      (模型对话，不产出 A2UI；默认 SSE，?stream=false 收一次性 JSON)',
+  'POST /api/a2ui/action    (客户端动作回传：userAction → 协议消息，一次性 JSON)',
   'GET  /api/a2ui/session/:threadId',
 ];
 

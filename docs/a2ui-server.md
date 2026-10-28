@@ -234,7 +234,57 @@ RUN_FINISHED               ← result: { model, chars }
    `sessions` 不会因对话增长）。
 
 空产出（网关回 200 + 空 `choices`，通常是模型名写错）→ 流内 `RUN_ERROR`（`EMPTY_OUTPUT`）；
-上游调用失败 → `RUN_ERROR`（`MODEL_ERROR`），已吐出的半截回复照常闭合。
+上游调用失败 → `RUN_ERROR`（`MODEL_ERROR`），已吐出的半句回复照常闭合。
+
+### 2c. `POST /api/a2ui/action` —— 客户端动作回传（一次性 JSON）
+
+**补的是链路里缺的那半段。** 协议规定 `Button.action` 由客户端物化成 `userAction` 交给宿主；
+渲染层（`a2ui-vue`）已经做到「派发 `a2ui-action` DOM 事件」为止，**但事件之后没人接**——
+没有这条接口时，点服务端动作按钮等于什么都没发生。
+
+请求体二选一（`userAction` 的字段与 `client_to_server.json` 一致）：
+
+```bash
+# 形状 A：包在 userAction 里
+curl -X POST http://localhost:3000/api/a2ui/action \
+  -H 'Content-Type: application/json' \
+  -d '{"threadId":"sc-xxx","userAction":{"name":"viewDetail","sourceComponentId":"detail-btn","context":{}}}'
+
+# 形状 B：字段平铺在顶层
+curl -X POST http://localhost:3000/api/a2ui/action \
+  -H 'Content-Type: application/json' \
+  -d '{"threadId":"sc-xxx","name":"viewDetail"}'
+```
+
+响应（**始终 200**，除非入参非法 / 会话不存在）：
+
+```json
+{
+  "threadId": "sc-xxx",
+  "surfaceId": "column-row-mix",
+  "handledBy": "fallback",
+  "messageCount": 1,
+  "elapsedMs": 60,
+  "messages": [
+    { "dataModelUpdate": { "surfaceId": "column-row-mix", "path": "__lastAction", "contents": [ ... ] } }
+  ]
+}
+```
+
+四条契约：
+
+1. **没注册 handler 也有回执**。默认 handler（`fallback`）把动作写进数据模型的 `__lastAction`
+   （`name` / `sourceComponentId` / `at`），所以**任何点击都能看到反应**；界面想展示就绑
+   `__lastAction/name`，不想展示就无视。
+2. **业务逻辑靠注册，不靠改这里**。`createActionRouter({ refund: (action, ctx) => [...] })`
+   按动作名覆盖；只有业务方知道自己有哪些字段、该调哪个接口。
+3. **handler 抛错不断链路**：路由捕获后仍回 200 + `error` 字段 + 空 `messages`，
+   客户端可以继续操作，不会因为一次动作失败就卡死。
+4. **回执进会话缓存**（`activate: false`）：`GET /api/a2ui/session/:threadId` 能整段回放，
+   刷新页面不会把动作造成的数据变化丢掉。
+
+> 入参校验：缺 `threadId` → 400；`userAction` 缺 `name` → 400；会话不存在 → 404。
+> 这三个都在动 handler **之前**挡掉。
 
 ### 3. 示例场景（三条只读接口）
 

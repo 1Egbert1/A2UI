@@ -27,6 +27,7 @@
 import { Readable } from 'node:stream';
 import type Router from 'koa-router';
 import type { A2UIAgent } from '../agent';
+import { parseUserAction, type ActionRouter } from '../actions';
 import { encodeSse, runA2UIStream, runChatStream } from '../agui';
 import type { ModelChat } from '../chat';
 import { hasModelKey, type ServerConfig } from '../config';
@@ -49,6 +50,8 @@ export interface RouteDeps {
   /** 纯模型对话（`/api/a2ui/chat`），与 A2UI agent 无关。 */
   chat: ModelChat;
   sessions: SessionStore;
+  /** 客户端动作路由（`POST /api/a2ui/action`）。 */
+  actions: ActionRouter;
 }
 
 interface PreparedRun {
@@ -384,6 +387,72 @@ export const registerRoutes = (router: Router, deps: RouteDeps): void => {
   /** 等价于 `POST /api/a2ui/run?stream=false`。给脚本、回归测试、缓存预热用。 */
   router.post('/api/a2ui/generate', async (ctx) => {
     await respondJson(ctx, deps, prepare(deps, ctx.request.body));
+  });
+
+  /**
+   * 客户端动作回传：把 `userAction` 交给动作路由，返回增量协议消息。
+   *
+   * 补的是「按钮点了没人接」那半段：渲染层派发 `a2ui-action` 之后，宿主原本只能自己处理；
+   * 现在把动作 POST 过来，服务端按注册的 handler 产出一条（或几条）`dataModelUpdate` /
+   * `surfaceUpdate`，客户端 `ingest` 回去 —— 数据模型面板、以及绑定该 path 的组件都会立刻变化。
+   *
+   * 刻意**不用 SSE**：动作回执通常只有一两条消息，一次性 JSON 更简单；需要推送的业务进度
+   * 应该走 `/run` 那一侧，不要把这个接口做成流。
+   */
+  router.post('/api/a2ui/action', async (ctx) => {
+    const body = (ctx.request.body ?? {}) as Record<string, unknown>;
+    const threadId = typeof body.threadId === 'string' ? body.threadId.trim() : '';
+    if (threadId === '') {
+      throw new BadRequestError('缺少 threadId：动作必须归属到某个会话');
+    }
+
+    // 允许两种送法：`{ threadId, userAction }` 或把 userAction 字段平铺在顶层。
+    const action = parseUserAction(body.userAction ?? body);
+    if (!action) {
+      throw new BadRequestError('userAction 缺少 name：无法确定要执行哪个动作');
+    }
+
+    const session = deps.sessions.get(threadId);
+    if (!session) {
+      ctx.status = 404;
+      ctx.body = { error: `会话「${threadId}」不存在或已过期` };
+      return;
+    }
+
+    const surfaceId = action.surfaceId || session.surfaceId;
+    const startedAt = Date.now();
+
+    try {
+      const outcome = await deps.actions.handle(
+        { ...action, surfaceId },
+        { sessionId: threadId, surfaceId, now: new Date() },
+      );
+
+      if (outcome.messages.length > 0) {
+        // activate: false —— 动作只改当前界面，不该改变「下一轮往哪个 surface 上改」。
+        deps.sessions.recordSurface(session, surfaceId, outcome.messages, { activate: false });
+      }
+
+      ctx.body = {
+        threadId,
+        surfaceId,
+        handledBy: outcome.handledBy,
+        messageCount: outcome.messages.length,
+        elapsedMs: Date.now() - startedAt,
+        messages: outcome.messages,
+      };
+    } catch (error) {
+      // 单个 handler 失败不该让整条交互断掉：回 200 + 空消息 + error，客户端可继续操作。
+      ctx.body = {
+        threadId,
+        surfaceId,
+        handledBy: 'error',
+        messageCount: 0,
+        elapsedMs: Date.now() - startedAt,
+        messages: [],
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   });
 
   /** 生成缓存回放：客户端刷新后据此恢复界面，不必重新问模型。 */
