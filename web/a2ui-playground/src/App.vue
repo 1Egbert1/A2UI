@@ -295,7 +295,7 @@
             「只跟模型说话」的开关已移除：这个 demo 只用来生成界面，不测纯对话。
             chatOnly 固定为 false，下面的分支只是历史兼容，实际不会走到。
           -->
-          <p>描述一句，我会在左边预览里实时生成。同一个 threadId 连续发送即多轮。</p>
+          <p>{{ chatHint }}</p>
         </div>
 
         <div ref="chatScrollRef" class="chat">
@@ -1080,6 +1080,19 @@ const chatMessages = ref<ChatMessage[]>([]);
  * 形态失败（抽不到消息、502、空产出），很难一眼看出是配置问题；纯对话直接给原话，对了就是对了。
  */
 const chatOnly = ref(false);
+
+/**
+ * 输入框上方那句提示：告诉用户这一句会「改当前页」还是「从零生成」。
+ *
+ * 两者的行为差别很大（增量覆盖 vs 整页重画），不该让用户靠猜。
+ */
+const chatHint = computed(() => {
+  const hasInterface =
+    previewSource.value === 'api' && (serverResult.value?.sessionId ?? '') !== '';
+  return hasInterface
+    ? '描述要改的地方，我会在这一页上做增量修改（只发变化的组件，不重画整页）。点「选择元素」可用 @id 指到具体组件。'
+    : '描述一句，我会在左边预览里生成界面。同一个 threadId 连续发送即多轮。';
+});
 /** 最近一次对话用的模型名（来自 `model.info` 事件），底栏显示。 */
 const chatModel = ref('');
 /** 聊天区的滚动容器：新内容到达时自动贴底。 */
@@ -2312,7 +2325,25 @@ const runFromServer = async (payload: RunPayload): Promise<void> => {
    * 场景顶掉，之后你再发一句话，服务端就画到示例的界面上去了。独立 thread 还顺带保证
    * 每次载入都是干净会话，surface 缓存不会累积重复消息。
    */
-  const threadId = scenario === '' ? serverThreadId.value : newServerThreadId('sc');
+  /**
+   * 本轮打到哪个会话。
+   *
+   * 有界面在场时，对话必须打到**产生这个界面的那个会话**：只有那里记着这一页的完整协议，
+   * 模型才「见过」当前界面 —— `buildRevisionHint` 只在 history 非空时生效，才会要求模型
+   * 「只发变化的部分」，前端也才会原地更新而不是重画一张新的。
+   * 打到 `serverThreadId` 等于开了个空会话，模型手上没有任何现有界面，只能从零生成。
+   *（动作回传早已按这个口径取会话，见 `handleUserAction`。）
+   *
+   * Stream 模拟的界面来自本地 fixture，没有服务端会话，只能退回新会话 —— 那种预览改不了。
+   */
+  const interfaceSessionId =
+    previewSource.value === 'api' ? (serverResult.value?.sessionId ?? '') : '';
+  const threadId =
+    scenario === ''
+      ? interfaceSessionId !== ''
+        ? interfaceSessionId
+        : serverThreadId.value
+      : newServerThreadId('sc');
 
   // 占位气泡要**先落进记录**再发请求：顺序反了的话，先到的 delta 找不到落点会被丢掉。
   // 场景运行不推 user 气泡 —— 用户并没有「说」什么，它只是一次载入。

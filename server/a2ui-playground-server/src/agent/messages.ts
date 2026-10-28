@@ -20,7 +20,12 @@ export const buildChatMessages = (request: AgentRequest): ChatMessage[] => {
   ];
 
   // 历史原样回放 —— 模型的上下文里既有「它上一轮吐了什么」，也有「这轮的目标 surface」。
+  // 空的 user 轮跳过：示例场景跑完会落一条 `content: ''` 的用户轮（用户并没有「说」什么），
+  // 回放出去等于给模型一句空指令，只会干扰它理解「现在要改什么」。
   for (const turn of request.history) {
+    if (turn.role === 'user' && turn.content.trim() === '') {
+      continue;
+    }
     messages.push({ role: turn.role, content: turn.content });
   }
 
