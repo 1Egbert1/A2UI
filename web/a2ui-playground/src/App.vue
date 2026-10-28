@@ -634,6 +634,8 @@
     >
       <pre class="code">{{ jsonlText }}</pre>
       <template #footer>
+        <el-button type="primary" @click="copyJsonl">复制 JSONL</el-button>
+        <el-button @click="downloadJsonl">下载 .jsonl</el-button>
         <el-button @click="jsonlVisible = false">关闭</el-button>
       </template>
     </el-dialog>
@@ -667,6 +669,8 @@ import type { A2UIBuffer, A2UIStoreState, JSONLStream, TreeMap, TreeNode } from 
 // 而「一份 JSONL 能派生出哪几种推送顺序」是解析层的通用工具，本就该由 SDK 提供。
 import { deriveStreamOrders } from 'a2ui-core/mock';
 import { renderMap } from 'a2ui-vue';
+// 全局注册的组件不用引，但 `ElMessage` 是函数式调用，必须显式 import。
+import { ElMessage } from 'element-plus';
 
 /**
  * 服务端登记的全部示例场景（`GET /api/a2ui/scenarios`）。
@@ -1281,6 +1285,34 @@ const jsonlText = ref('');
 const openJsonl = (messages: unknown[]): void => {
   jsonlText.value = messages.map((item) => JSON.stringify(item)).join('\n');
   jsonlVisible.value = true;
+};
+
+/**
+ * 复制整段 JSONL。
+ *
+ * 弹窗里的 `<pre>` 要手动选中 3 万多字符才能取走 —— 那等于没有出口：拿一份完整
+ * JSONL 是「把这页交给别人」「贴回来重放」的唯一入口，必须一键可取。
+ */
+const copyJsonl = async (): Promise<void> => {
+  try {
+    await navigator.clipboard.writeText(jsonlText.value);
+    ElMessage.success('已复制整段 JSONL');
+  } catch {
+    // 剪贴板被浏览器拒了（非安全上下文 / 权限）：退回下载，总比什么都不发生强。
+    ElMessage.warning('浏览器不允许复制，已改为下载');
+    downloadJsonl();
+  }
+};
+
+/** 下载成 .jsonl 文件：一行一条消息，与线上协议形态一致。 */
+const downloadJsonl = (): void => {
+  const blob = new Blob([jsonlText.value], { type: 'application/x-ndjson' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = `a2ui-${activeSurfaceId.value || 'surface'}.jsonl`;
+  anchor.click();
+  URL.revokeObjectURL(url);
 };
 
 /**
