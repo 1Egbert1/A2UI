@@ -61,17 +61,10 @@ const readSurfaceId = (id: string, lines: string[]): string => {
 
 /** 登记表。`desc` 是下拉里给人看的一句话说明。 */
 const TABLE: Array<{ id: string; desc: string; lines: string[] }> = [
-  { id: 'simple-text', desc: '单个 Text，最小示例', lines: coreMock.simpleTextMessages },
-  { id: 'product-card', desc: '官方 05 示例，Card + Row + Column', lines: coreMock.productCardMessages },
-  { id: 'column-texts', desc: '一父三子，验证父子组装', lines: coreMock.columnTextsMessages },
-  { id: 'column-row-mix', desc: 'Column / Row 混排，最深 5 层', lines: coreMock.columnRowMixMessages },
-  { id: 'data-binding', desc: '数据绑定：输入 / 勾选 / 拖动写回数据模型', lines: coreMock.dataBindingMessages },
-  { id: 'list-template', desc: 'List 动态渲染：按数据列表展开模板组件', lines: coreMock.listTemplateMessages },
-  { id: 'shopping-cart', desc: '购物车列表：List 模板 + 图片 + 合计绑定', lines: coreMock.shoppingCartMessages },
   {
-    id: 'local-action',
-    desc: '本地动作：按钮点击写回数据模型（不经过服务端）',
-    lines: coreMock.localActionMessages,
+    id: 'weather',
+    desc: '天气页（武汉）：真实生成结果，含 15 天预报 / 逐小时 / 生活服务与本地动作',
+    lines: coreMock.weatherMessages,
   },
 ];
 
@@ -85,7 +78,7 @@ export const SCENARIOS: ScenarioDefinition[] = TABLE.map(({ id, desc, lines }) =
 }));
 
 /** id 缺省时用哪个场景（与 playground 的默认下拉项保持一致）。 */
-export const DEFAULT_SCENARIO_ID = 'column-row-mix';
+export const DEFAULT_SCENARIO_ID = 'weather';
 
 export const listScenarios = (): ScenarioSummary[] =>
   SCENARIOS.map(({ id, desc, surfaceId, lines }) => ({

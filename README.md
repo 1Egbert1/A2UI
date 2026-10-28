@@ -148,18 +148,16 @@ Vite + Vue3 应用，通过 Vite alias 直接引用各包 `src`，改 SDK 无需
 
 主要职责及详细功能：
 
-1. **示例场景全走接口** —— 顶部下拉的 8 个示例由服务端提供（`GET /api/a2ui/scenarios`），选中即走一次 SSE 运行。示例数据与自由输入共用同一条链路，**不存在「本地渲染」的第二套**。
+1. **示例场景全走接口** —— 顶部下拉的示例由服务端提供（`GET /api/a2ui/scenarios`），选中即走一次 SSE 运行。示例数据与自由输入共用同一条链路，**不存在「本地渲染」的第二套**。当前只保留一份示例：**天气页（武汉）**，它是一次真实生成的结果，含 15 天预报 / 逐小时 / 生活服务与四个本地动作。
 2. 通过对话方式，让 AI Agent 生成对应的 UI 界面
 3. 预览生成的页面
 4. 支持多轮对话增量调整界面
 5. 预览 a2ui-vue 定义的基础 A2UI 组件
-6. 协议调试 —— 左侧 **Stream 模拟**页签两条模式，数据都来自服务端：
-   - **逐条（JSONL）**：客户端步进，一条条推给 `createJSONLStream()`，随时停下看 store 变化；
-   - **字符流**：服务端把 fixture 按固定块长吐回来（`GET /api/a2ui/scenarios/:id/stream`），
-     客户端只消费，喂给 `createA2UIBuffer()` —— 切片落在 JSON 任意位置，靠括号配对与协议补全拼回去。
+6. **Stream 模拟** —— 顶部开关，控制协议消息**怎么回来**：
+   - **流式（默认开）**：消息逐条到达即 ingest，预览区逐块长出；
+   - **整体（关）**：先攒齐全部消息再一次性 ingest，预览一次性出现。
+   过程明细（逐条 / 字符流两条模式、顺序、块长、逐条日志）收在预览底部的折叠块里，数据都来自服务端。
 7. 对接服务端 —— 右侧 **聊天栏**里用输入框 + 发送键走 SSE 流式，收到的协议消息喂进同一套解析链路，组件在左侧预览区一个个长出来
-8. **仅测模型对话** —— 聊天栏标题右侧的「对话 / 界面」开关。切到「对话」后发送键改打
-   `POST /api/a2ui/chat`，气泡里显示模型原话，**不生成界面、不动预览、不碰 store**，
    多轮由前端自带历史。用于把 baseURL / Key / 模型名这三件事单独验一遍（未配 Key 时
    气泡里直接显示服务端 503 的原话，写明了该改哪个文件）
 
@@ -176,12 +174,12 @@ Vite + Vue3 应用，通过 Vite alias 直接引用各包 `src`，改 SDK 无需
 
    入站接受三种形状：AG-UI 的 `RunAgentInput`（`threadId` / `runId` / `messages`）、
    简写 `{ message }`、示例场景 `{ scenario }`。三者最终汇成同一份入参。
-2. **示例场景**：8 份内置 fixture（来自 `a2ui-core/mock`）经接口提供 ——
+2. **示例场景**：内置 fixture（来自 `a2ui-core/mock`，当前是天气页一份）经接口提供 ——
    `GET /api/a2ui/scenarios` 列场景、`GET /api/a2ui/scenarios/:id` 取原始素材、
    `GET /api/a2ui/scenarios/:id/stream` 把素材按固定块长**字符级**吐出来（`?order=` / `?chunk=` / `?delay=` 可调）、
    `run` 带 `scenario` 即由 fixture 产出。三条刻意的规则：**场景永远走 fixture，与
    `AGENT_PROVIDER` 无关**（它是素材不是模型产出）；跑在 **fixture 自带的 surfaceId** 上
-   （不是 id，`product-card` 用的就是 `gallery-product-card`）；**不夺走会话的活跃 surface**。
+   （不是场景 id，两者可能不同名）；**不夺走会话的活跃 surface**。
 3. **agent**：`mock`（离线假数据，当前默认）与 `openai` 两个实现，切换开关是 `AGENT_PROVIDER`；
    两者共用同一套「文本 → 协议消息」抽取与流式行装配，产出必然一致。
 4. **图标按需查（MCP）**：`Icon` 的图标名用 Element Plus 图标库导出名，但**清单不进 system prompt**——

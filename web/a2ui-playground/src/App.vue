@@ -55,24 +55,8 @@
             <button
               type="button"
               class="segmented__item"
-              :class="{ 'segmented__item--active': stageTab === 'preview' }"
-              @click="stageTab = 'preview'"
-            >
-              预览
-            </button>
-            <button
-              type="button"
-              class="segmented__item"
-              :class="{ 'segmented__item--active': stageTab === 'stream' }"
-              @click="stageTab = 'stream'"
-            >
-              Stream 模拟
-            </button>
-            <button
-              type="button"
-              class="segmented__item"
               :class="{ 'segmented__item--active': picking }"
-              :disabled="stageTab !== 'preview' || !treeRoot"
+              :disabled="!treeRoot"
               :title="
                 picking
                   ? '选取中：点击预览里的元素把它引用到输入框（Esc 退出）'
@@ -82,11 +66,25 @@
             >
               {{ picking ? '选取中…' : '选择元素' }}
             </button>
+            <label
+              class="stream-switch"
+              title="开：流式返回，界面逐块长出；关：整体返回，收完一次性出现"
+            >
+              <el-switch
+                v-model="streamSimOn"
+                size="small"
+                inline-prompt
+                active-text="流式"
+                inactive-text="整体"
+                :disabled="sseActive"
+              />
+              <span class="stream-switch__text">Stream 模拟</span>
+            </label>
           </div>
           <span class="tag">{{ stageTag }}</span>
         </div>
 
-        <div v-show="stageTab === 'preview'" class="stage">
+        <div class="stage">
           <!--
             选取模式：开启后点击容器内任意位置，取最近的带 id 元素（withRootId 给每个
             组件根元素加了 `surfaceId-componentId`），把 componentId 以 @id 加进输入框。
@@ -144,7 +142,13 @@
           </details>
         </div>
 
-        <div v-show="stageTab === 'stream'" class="stage">
+        <!--
+          消息流明细：调试用，默认折叠。正文里的「Stream 模拟」是顶部那个开关 ——
+          它决定内容怎么回来（流式逐块 / 整体一次性），这里只是把过程摊开来看。
+        -->
+        <details class="fold stream-fold">
+          <summary>Stream 模拟明细（消息流，仅调试）</summary>
+          <div class="stage">
           <p v-if="streamMode === 'jsonl'" class="stream-desc">
             素材来自服务端的 fixture 接口，但<strong>节奏由客户端定</strong>：一次推一条完整消息给
             <code>createJSONLStream()</code>，每条抵达后立即刷新 store（hydrate + buildTree）。
@@ -278,29 +282,20 @@
                 : '还没有推送任何消息，点「推送下一条」开始。'
             }}
           </p>
-        </div>
+          </div>
+        </details>
       </section>
 
       <aside class="panel chat-panel">
         <div class="chat-header">
           <div class="chat-header__top">
-            <h2>{{ chatOnly ? '只跟模型说话' : '想做什么界面？' }}</h2>
-            <el-switch
-              v-model="chatOnly"
-              size="small"
-              inline-prompt
-              active-text="对话"
-              inactive-text="界面"
-              :disabled="sseActive"
-              title="开启后只测模型对话：不生成界面、不动预览"
-            />
+            <h2>想做什么界面？</h2>
           </div>
-          <p v-if="chatOnly">
-            打开开关后只发一句给模型（<code>{{ SERVER_BASE }}/api/a2ui/chat</code>），
-            <strong>不生成界面、不动左侧预览</strong> —— 用来单独确认 baseURL / Key / 模型名通不通。
-            多轮由前端自带历史（接口是无状态的）。
-          </p>
-          <p v-else>描述一句，我会在左边预览里实时生成。同一个 threadId 连续发送即多轮。</p>
+          <!--
+            「只跟模型说话」的开关已移除：这个 demo 只用来生成界面，不测纯对话。
+            chatOnly 固定为 false，下面的分支只是历史兼容，实际不会走到。
+          -->
+          <p>描述一句，我会在左边预览里实时生成。同一个 threadId 连续发送即多轮。</p>
         </div>
 
         <div ref="chatScrollRef" class="chat">
@@ -880,12 +875,16 @@ watch(picking, (active) => {
 });
 
 /**
- * 左侧舞台当前展示哪一块：预览 / Stream 模拟。
+ * 「Stream 模拟」是**内容怎么回来**，不是一个页面：
+ * - 开（默认）= 流式返回：协议消息逐条到达即 ingest，预览区逐块长出；
+ * - 关 = 整体返回：先攒齐全部消息，最后一口气 ingest，预览一次性出现。
  *
- * 两块并存而不是把 Stream 收进弹窗 —— 它是这个项目最有说服力的部分（buffer 逐字符补全、
- * 协议顺序对渲染时机的影响都只能在这里看出来），值得一个常驻的位置。
+ * 消息流明细（逐条/字符流、顺序、块长）收进预览底部的折叠块，那是调试用的。
  */
-const stageTab = ref<'preview' | 'stream'>('preview');
+const streamSimOn = ref(true);
+
+/** 整体返回时的消息暂存：攒齐后一次性 ingest（见 `handleRunEvent` 与 `settle`）。 */
+let pendingIngest: string[] = [];
 
 /** 服务端 `?stream=false` 的响应体（只声明本面板用到的字段）。 */
 interface ServerRunResult {
@@ -1442,19 +1441,10 @@ const treeLabel = computed(() => {
 });
 
 /** 面板右上角那枚 tag：跟着当前 tab 换口径。 */
+/** 面板右上角那枚 tag：组件树规模 + 当前的返回方式。 */
 const stageTag = computed(() => {
-  if (stageTab.value === 'preview') {
-    return treeLabel.value;
-  }
-
-  const name = activeScenario.value?.id ?? '未选场景';
-  if (streamMode.value === 'jsonl') {
-    return `${name} · 逐条推送`;
-  }
-  // 块长与节奏都来自服务端（`stream.started` 回显），开流之前还不知道 —— 那时不编数字。
-  return charTotalChunks.value === 0
-    ? `${name} · 字符流（未开始）`
-    : `${name} · ${charChunkSize.value} 字符 / ${charDelayMs.value}ms`;
+  const mode = streamSimOn.value ? '流式返回' : '整体返回';
+  return `${treeLabel.value} · ${mode}`;
 });
 
 /**
@@ -2183,13 +2173,20 @@ const handleAgUiEvent = (event: AgUiSseEvent): void => {
   }
 
   if (event.name === 'a2ui.message') {
-    // 记账与渲染走同一条：先入列（状态条实时涨），再 push 进 JSONL 流 ——
+    // 记账与渲染走同一条：先入列（状态条实时涨），再进 JSONL 流 ——
     // push 内部 ingest + 刷新派生状态（含 SDK 的 renderTree 回调），所以预览随即长出来。
     serverResult.value?.messages.push(event.value);
     // 流式期间实时把条数写进气泡，让「协议渲染中」阶段能显示已渲染 N 条
     //（收尾 settle 之前 messageCount 一直是初始的 0）。
     patchActiveAgent({ messageCount: serverResult.value?.messages.length ?? 0 });
-    stream.push(`${JSON.stringify(event.value)}\n`);
+    const line = `${JSON.stringify(event.value)}\n`;
+    if (streamSimOn.value) {
+      // 流式返回：逐条到达即渲染，预览逐块长出。
+      stream.push(line);
+    } else {
+      // 整体返回：先攒着，settle 时一口气 ingest —— 预览一次性出现。
+      pendingIngest.push(line);
+    }
     return;
   }
 
@@ -2329,6 +2326,7 @@ const runFromServer = async (payload: RunPayload): Promise<void> => {
   attachedImages.value = [];
 
   serverError.value = '';
+  pendingIngest = [];
   sseActive.value = true;
   startStreamTick();
 
@@ -2338,6 +2336,15 @@ const runFromServer = async (payload: RunPayload): Promise<void> => {
 
   /** 一轮结束时收尾：把状态、条数、耗时记到那个 agent 气泡上。 */
   const settle = (status: ChatMessage['status'], errorText = ''): void => {
+    // 整体返回：到这里才把攒着的消息一口气 ingest。成功失败都补上 ——
+    // 半截流也该让用户看见已经到的部分，而不是悄悄丢掉。
+    if (pendingIngest.length > 0) {
+      for (const line of pendingIngest) {
+        stream.push(line);
+      }
+      pendingIngest = [];
+    }
+
     const elapsedMs = Date.now() - startedAt;
     patchActiveAgent({
       status,
@@ -2929,6 +2936,38 @@ onBeforeUnmount(() => {
   background: #ffffff;
   color: #1f2937;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+/* 「Stream 模拟」开关：与「选择元素」并排，开关在右、标签在左，视觉上是一枚控件。 */
+.stream-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0 0.35rem 0 0.55rem;
+  margin-left: 0.35rem;
+  height: 1.85rem;
+  border-radius: 8px;
+  cursor: pointer;
+  user-select: none;
+  color: #475569;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+.stream-switch__text {
+  line-height: 1;
+}
+
+/* 消息流明细：调试用，默认折叠，收在预览底部，不再占一个 tab。 */
+.stream-fold {
+  margin-top: 0.85rem;
+}
+
+.stream-fold > .stage {
+  margin-top: 0.6rem;
+  padding: 0;
+  border: none;
+  background: transparent;
 }
 
 /* 折叠区（数据模型 / 组件树）：默认收起，让预览区干净；要看细节点一下。 */

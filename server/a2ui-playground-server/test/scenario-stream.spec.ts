@@ -50,7 +50,7 @@ describe('scenario stream / 事件序列', () => {
   after(() => close(server));
 
   it('started → chunk × N → done，且片数与 totalChunks 一致', async () => {
-    const response = await fetch(`${base}/api/a2ui/scenarios/simple-text/stream`);
+    const response = await fetch(`${base}/api/a2ui/scenarios/weather/stream`);
     const events = await readEvents(response);
 
     assert.equal(response.status, 200);
@@ -70,7 +70,7 @@ describe('scenario stream / 事件序列', () => {
   });
 
   it('started 报的字符总数与分片实际内容一致', async () => {
-    const events = await readEvents(await fetch(`${base}/api/a2ui/scenarios/shopping-cart/stream`));
+    const events = await readEvents(await fetch(`${base}/api/a2ui/scenarios/weather/stream`));
     const started = startedOf(events);
     const text = chunksOf(events).join('');
 
@@ -79,7 +79,7 @@ describe('scenario stream / 事件序列', () => {
   });
 
   it('分片拼回来与 fixture 等价（组件集合完全一致）', async () => {
-    const events = await readEvents(await fetch(`${base}/api/a2ui/scenarios/column-row-mix/stream`));
+    const events = await readEvents(await fetch(`${base}/api/a2ui/scenarios/weather/stream`));
     const text = chunksOf(events).join('');
     const lines = text.split('\n').filter((line) => line !== '');
 
@@ -90,15 +90,15 @@ describe('scenario stream / 事件序列', () => {
 
     // 紧凑形态把多条 surfaceUpdate 合并了，但**组件一个都不能少**。这是「拼回来的东西
     // 与 fixture 等价」最实在的一条：缓冲区补全之后必然要与原素材的组件集合重合。
-    const fixture = getScenario('column-row-mix');
+    const fixture = getScenario('weather');
     assert.ok(fixture);
     assert.deepEqual(componentIds(text), componentIds(fixture.lines.join('\n')));
   });
 
   it('surfaceId 走 fixture 自带那个（不是拿 id 顶替）', async () => {
-    const events = await readEvents(await fetch(`${base}/api/a2ui/scenarios/product-card/stream`));
+    const events = await readEvents(await fetch(`${base}/api/a2ui/scenarios/weather/stream`));
 
-    assert.equal(startedOf(events).surfaceId, 'gallery-product-card');
+    assert.equal(startedOf(events).surfaceId, 'weather');
   });
 });
 
@@ -113,7 +113,7 @@ describe('scenario stream / 顺序与参数', () => {
   after(() => close(server));
 
   it('默认 order=stream：beginRendering 紧随 root（第 2 条），不是最后一条', async () => {
-    const events = await readEvents(await fetch(`${base}/api/a2ui/scenarios/column-texts/stream`));
+    const events = await readEvents(await fetch(`${base}/api/a2ui/scenarios/weather/stream`));
     const lines = chunksOf(events).join('').split('\n').filter((line) => line !== '');
 
     assert.equal(startedOf(events).order, 'stream');
@@ -121,19 +121,33 @@ describe('scenario stream / 顺序与参数', () => {
     assert.equal(JSON.parse(lines.at(-1) as string).beginRendering, undefined);
   });
 
-  it('order=protocol：beginRendering 落回最后一条', async () => {
+  it('order=protocol：原样下发（不丢不移，fixture 本身就是流式友好顺序）', async () => {
     const events = await readEvents(
-      await fetch(`${base}/api/a2ui/scenarios/column-texts/stream?order=protocol`),
+      await fetch(`${base}/api/a2ui/scenarios/weather/stream?order=protocol`),
     );
     const lines = chunksOf(events).join('').split('\n').filter((line) => line !== '');
+    const fixture = getScenario('weather');
+    assert.ok(fixture);
 
     assert.equal(startedOf(events).order, 'protocol');
-    assert.ok(JSON.parse(lines.at(-1) as string).beginRendering);
+
+    // 契约不是「beginRendering 一定在最后」，那是老 fixture 的偶然形态。真正的契约是：
+    // **protocol = fixture 原样相对顺序**（只把多条 surfaceUpdate 合并成一条）。
+    // weather 的 fixture 已经是流式友好顺序（beginRendering 在第 2 条），所以它仍在第 2 行。
+    const fixtureBeginAt = fixture.lines.findIndex((line) => JSON.parse(line).beginRendering !== undefined);
+    assert.ok(fixtureBeginAt >= 0, 'fixture 里应该有 beginRendering');
+    assert.ok(
+      JSON.parse(lines[fixtureBeginAt] as string).beginRendering,
+      `紧凑后 beginRendering 应仍在第 ${fixtureBeginAt + 1} 行`,
+    );
+
+    // 无论哪种 order，组件集合都不能少 —— 这是「原样下发」最实在的一条。
+    assert.deepEqual(componentIds(lines.join('\n')), componentIds(fixture.lines.join('\n')));
   });
 
   it('?chunk= 覆盖块长，且每片不超长', async () => {
     const events = await readEvents(
-      await fetch(`${base}/api/a2ui/scenarios/simple-text/stream?chunk=17`),
+      await fetch(`${base}/api/a2ui/scenarios/weather/stream?chunk=17`),
     );
     const started = startedOf(events);
 
@@ -148,7 +162,7 @@ describe('scenario stream / 顺序与参数', () => {
     const short = listen(makeConfig({ scenarioChunkSize: 7 }));
     try {
       const events = await readEvents(
-        await fetch(`${short.base}/api/a2ui/scenarios/simple-text/stream`),
+        await fetch(`${short.base}/api/a2ui/scenarios/weather/stream`),
       );
       assert.equal(startedOf(events).chunkSize, 7);
     } finally {
@@ -156,11 +170,14 @@ describe('scenario stream / 顺序与参数', () => {
     }
   });
 
-  it('?delay= 真的把节奏拖慢（事件之间等了一下）', async () => {
+  it('?delay= 真的把节奏拖慢（事件之间等了一下）', async function () {
+    // weather 这份 fixture 有 20 条消息、几十 KB，按 50 字符一片要几百片，
+    // 2ms/片 就是秒级 —— mocha 默认 2s 会误判成挂掉，这里显式放宽。
+    this.timeout(30_000);
     const delayMs = 2;
     const started = Date.now();
     const events = await readEvents(
-      await fetch(`${base}/api/a2ui/scenarios/column-row-mix/stream?delay=${delayMs}`),
+      await fetch(`${base}/api/a2ui/scenarios/weather/stream?delay=${delayMs}`),
     );
     const elapsed = Date.now() - started;
     const total = startedOf(events).totalChunks;
@@ -198,18 +215,18 @@ describe('scenario stream / 错误分支', () => {
   });
 
   it('order 只认两个字面量 → 其它一律 400', async () => {
-    await expectRejected('/api/a2ui/scenarios/simple-text/stream?order=nope', 400);
+    await expectRejected('/api/a2ui/scenarios/weather/stream?order=nope', 400);
   });
 
   it('chunk / delay 非法（0、负数、非数字）→ 400', async () => {
-    await expectRejected('/api/a2ui/scenarios/simple-text/stream?chunk=0', 400);
-    await expectRejected('/api/a2ui/scenarios/simple-text/stream?chunk=abc', 400);
-    await expectRejected('/api/a2ui/scenarios/simple-text/stream?chunk=1.5', 400);
-    await expectRejected('/api/a2ui/scenarios/simple-text/stream?delay=-1', 400);
+    await expectRejected('/api/a2ui/scenarios/weather/stream?chunk=0', 400);
+    await expectRejected('/api/a2ui/scenarios/weather/stream?chunk=abc', 400);
+    await expectRejected('/api/a2ui/scenarios/weather/stream?chunk=1.5', 400);
+    await expectRejected('/api/a2ui/scenarios/weather/stream?delay=-1', 400);
   });
 
   it('delay=0 合法（表示不限速）', async () => {
-    const response = await fetch(`${base}/api/a2ui/scenarios/simple-text/stream?delay=0`);
+    const response = await fetch(`${base}/api/a2ui/scenarios/weather/stream?delay=0`);
 
     assert.equal(response.status, 200);
     assert.equal(startedOf(await readEvents(response)).delayMs, 0);
