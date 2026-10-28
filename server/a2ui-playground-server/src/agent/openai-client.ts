@@ -69,7 +69,28 @@ interface StreamedToolCall {
   args: string;
 }
 
-const MAX_TOOL_ROUNDS = 4;
+/**
+ * 单次请求内允许的最大工具轮数，防模型陷入「调用→再调用」死循环。
+ *
+ * 从 4 提到 8：图标密集的页面（天气、榜单、仪表盘）里，模型一轮只查一两个概念时
+ * 4 轮不够用，会被误判成死循环。真正的保险不是这个数字，而是打满之后**降级产出**
+ * （见 `FORCE_OUTPUT_NOTE`）—— 上限只负责止损，不负责失败。
+ */
+const MAX_TOOL_ROUNDS = 8;
+
+/**
+ * 打满工具轮数后追加的一句。带着它、**不带 tools** 再请求一次，让模型直接产出：
+ * 把「报错整单失败」变成「退化但成功」。实测模型看到这句都能立刻收尾。
+ */
+const FORCE_OUTPUT_NOTE =
+  '工具调用次数已达本轮上限。请立刻直接给出最终结果，不要再调用任何工具。';
+
+/** 工具轮的可观测输出：一行看清「问了什么、回来多少」，空结果单独标注。 */
+const describeCall = (name: string, rawArgs: string, result: string): string => {
+  const args = rawArgs.length > 80 ? `${rawArgs.slice(0, 80)}…` : rawArgs;
+  const empty = /"total":0|"icons":\[\]/.test(result) ? '（空结果）' : '';
+  return `${name}(${args}) → ${result.length} 字符${empty}`;
+};
 
 export const createTextCompletionClient = (config: OpenAIConfig): TextCompletionClient => {
   // 惰性 import：走 mock、或没配 Key 时这个 SDK 根本不会被加载，启动更快、也少一类启动期报错。
@@ -185,11 +206,20 @@ export const createTextCompletionClient = (config: OpenAIConfig): TextCompletion
         conversation.push(message);
         for (const call of calls) {
           const result = await executor.execute(call.function.name, parseArgs(call.function.arguments));
+          console.warn(
+            `[agent] 第 ${round + 1} 轮工具调用（上限 ${maxRounds}）：${describeCall(call.function.name, call.function.arguments, result)}`,
+          );
           conversation.push({ role: 'tool', tool_call_id: call.id, content: result });
         }
       }
 
-      throw new Error(`工具调用连续 ${maxRounds} 轮仍未产出最终文本，已中止（防止死循环）`);
+      console.warn(`[agent] 工具轮已用满 ${maxRounds} 轮，撤掉工具强制产出最终结果`);
+      conversation.push({ role: 'user', content: FORCE_OUTPUT_NOTE });
+      const forced = await client.chat.completions.create({
+        ...requestOf(conversation, options),
+        stream: false,
+      });
+      return forced.choices[0]?.message?.content ?? '';
     },
 
     async *stream(messages, options = {}): AsyncGenerator<ModelDelta> {
@@ -212,6 +242,9 @@ export const createTextCompletionClient = (config: OpenAIConfig): TextCompletion
 
         // 工具调用是分片流过来的：按 index 累积 id / name / arguments 再拼成完整调用。
         const pending = new Map<number, StreamedToolCall>();
+        // 这一轮吐出的文本也要攒着：同一轮里「先说两句、再调工具」很常见，
+        // 回灌时若写成 null，模型下一轮会以为先前什么都没说，从头再写一遍。
+        let roundText = '';
 
         for await (const chunk of completion) {
           const delta = chunk.choices[0]?.delta as ReasoningDelta | undefined;
@@ -223,6 +256,9 @@ export const createTextCompletionClient = (config: OpenAIConfig): TextCompletion
               ...(content ? { content } : {}),
               ...(reasoning ? { reasoning } : {}),
             };
+          }
+          if (content) {
+            roundText += content;
           }
 
           for (const call of toolCallDeltasOf(delta)) {
@@ -249,7 +285,7 @@ export const createTextCompletionClient = (config: OpenAIConfig): TextCompletion
         const calls = [...pending.values()].sort((a, b) => a.index - b.index);
         conversation.push({
           role: 'assistant',
-          content: null,
+          content: roundText === '' ? null : roundText,
           tool_calls: calls.map((call) => ({
             id: call.id,
             type: 'function',
@@ -258,11 +294,17 @@ export const createTextCompletionClient = (config: OpenAIConfig): TextCompletion
         });
         for (const call of calls) {
           const result = await executor.execute(call.name, parseArgs(call.args));
+          console.warn(
+            `[agent] 第 ${round + 1} 轮工具调用（上限 ${maxRounds}）：${describeCall(call.name, call.args, result)}`,
+          );
           conversation.push({ role: 'tool', tool_call_id: call.id, content: result });
         }
       }
 
-      throw new Error(`工具调用连续 ${maxRounds} 轮仍未产出最终文本，已中止（防止死循环）`);
+      // 打满轮数：撤掉工具再要走一遍流，让模型直接产出，别整单失败。
+      console.warn(`[agent] 工具轮已用满 ${maxRounds} 轮，撤掉工具强制产出最终结果`);
+      conversation.push({ role: 'user', content: FORCE_OUTPUT_NOTE });
+      yield* streamOnce(conversation as unknown as ChatMessage[], options);
     },
   };
 };

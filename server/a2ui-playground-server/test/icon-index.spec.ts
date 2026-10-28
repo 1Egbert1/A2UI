@@ -53,6 +53,45 @@ describe('icon-index', () => {
     assert.deepEqual(searchIcons('飞机').icons, []);
   });
 
+  // 多词查询是线上事故的源头：模型很自然地写 `天气 晴 云`，而改造前只按整串匹配，
+  // 这类查询一律返回 0 条 → 模型转去 listIcons 逐个字母翻目录 → 工具轮烧光报错。
+  it('searchIcons：多词中文查询不再落空', () => {
+    const result = searchIcons('天气 晴 云');
+    assert.ok(result.total > 0, '多词查询必须能查出来');
+    assert.ok(result.icons.includes('Sunny'), JSON.stringify(result));
+    assert.ok(result.icons.includes('Cloudy'), JSON.stringify(result));
+  });
+
+  it('searchIcons：多词英文查询也能命中', () => {
+    const result = searchIcons('cloudy weather');
+    assert.ok(result.icons.includes('Cloudy'), JSON.stringify(result));
+    assert.ok(result.icons.includes('MostlyCloudy'));
+  });
+
+  it('searchIcons：逗号 / 顿号 / 加号 / 竖线都算分隔符', () => {
+    for (const query of ['天气, 晴', '天气、晴', '天气+晴', '天气|晴', '天气　晴']) {
+      assert.ok(searchIcons(query).icons.includes('Sunny'), `${query} 应能切词`);
+    }
+  });
+
+  it('searchIcons：同时答上多个概念的排在只答上一个的前面', () => {
+    // Sunny 同时命中「晴」和「天气」两个概念，应当排在只命中「天气」的图标之前。
+    assert.equal(searchIcons('天气 晴').icons[0], 'Sunny');
+  });
+
+  it('searchIcons：多词中个别词查不到时，其余词照常返回', () => {
+    const result = searchIcons('飞机 天气');
+    assert.ok(result.icons.includes('Cloudy'), JSON.stringify(result));
+    // 全是查不到的概念，仍然返回空 —— 「能拆词」不等于「开始瞎编」。
+    assert.deepEqual(searchIcons('飞机 火箭').icons, []);
+  });
+
+  it('searchIcons：单词查询的结果不受切词改造影响', () => {
+    assert.equal(searchIcons('晴').icons[0], 'Sunny');
+    assert.equal(searchIcons('雨').icons[0], 'Drizzling');
+    assert.ok(searchIcons('cart').icons.includes('ShoppingCart'));
+  });
+
   it('listIcons：按首字母过滤，不传则全量', () => {
     const sList = listIcons('s', 300);
     assert.ok(sList.length > 5);

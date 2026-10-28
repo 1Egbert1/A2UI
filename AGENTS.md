@@ -36,6 +36,7 @@ Node ≥ 22，pnpm 12.10.1。
 | 组件类型名 → 渲染函数 | `packages/a2ui-vue/src/renderMap.ts`（18 个；没登记的组件会进 `errorMap` 的 `RENDERER_NOT_FOUND`） |
 | 组件级样式白名单 | `packages/a2ui-vue/src/internal/styles.ts` 的 `STYLE_RULES`（42 条，白名单外静默忽略） |
 | 示例场景数据 | `packages/a2ui-core/mock/**`（TS 模块导出 `string[]`；服务端读的是**构建产物**） |
+| 图标名清单与中文别名 | `server/a2ui-playground-server/src/agent/tools/icon-index.ts`（名字来自 `@element-plus/icons-vue` 导出键，**别手抄清单**；别名表没有对应图标的别硬加） |
 | 动作 handler | `server/a2ui-playground-server/src/actions/index.ts` 的 `createActionRouter`（按动作名 `register`；路由只做转发，不写业务） |
 | 协议定义（只读） | `specification/v0_8/**`——上游规范快照，不要改它去迁就实现 |
 

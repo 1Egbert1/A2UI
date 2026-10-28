@@ -210,6 +210,13 @@ agui/run.ts       事件流：RUN_STARTED → a2ui.surface → TEXT → a2ui.mes
 
 - 工具只有三个：`searchIcons`（中文概念/英文关键词搜索）、`listIcons`（按首字母浏览）、
   `getIcon`（校验名字是否存在，不存在给近似候选）。
+- **`searchIcons` 支持一次问多个概念**：`天气 晴 云`、`cart, user` 都会切词（空格 / 逗号 / 顿号 /
+  加号 / 竖线），逐词打分取最高，再按「答上了几个概念」加权。这一点不是锦上添花 —— 改造前只按
+  整串匹配，多词查询一律返回 0 条，模型转而用 `listIcons` 逐个字母翻 293 个名字，把工具轮数烧光，
+  线上报 `AGENT_ERROR：工具调用连续 4 轮仍未产出最终文本`。
+- **工具轮打满不报错，降级产出**：上限 8 轮（`MAX_TOOL_ROUNDS`），打满后追加一句「不要再调工具」、
+  **不带 `tools`** 再请求一次，让模型直接给最终结果。硬失败改成退化成功；每轮工具调用都会打一行
+  `[agent] 第 N 轮工具调用（上限 8）：searchIcons(...) → 109 字符`，空结果单独标注，便于复现问题。
 - 定义与实现：`src/agent/tools/`（`icon-index.ts` 纯索引、`icon-tools.ts` 工具定义与分发、
   `icons-mcp.ts` MCP Server + 内存通道客户端）。
 - 同一个 MCP Server 也能独立跑 stdio 给外部客户端用：`pnpm --filter a2ui-playground-server icons-mcp`。
@@ -225,6 +232,9 @@ agui/run.ts       事件流：RUN_STARTED → a2ui.surface → TEXT → a2ui.mes
   组件树消失，客户端却显示「已生成界面 · 2 条协议消息」，预览一片空白）。
 - **组件清单必须与渲染器一致**：清单里写 `usageHint` 这类渲染器不消费的字段没关系，但写了渲染器**没实现**
   的属性，模型照编后界面就空了。加组件要先实现渲染、再同步这里和 `renderMap.ts`。
+- **搜索工具的单测全用单词查询，于是「多词返回 0」这个 bug 一直绿着**：11 条 `searchIcons` 用例
+  全是 `购物车` / `cart` / `Search` 这类单词。模型真实的问法是 `天气 晴 云`，一查就空。
+  教训：**测工具的用例要照模型的真实问法写**，不是照函数签名写。现在多词、分隔符、混合语言都有断言。
 - **temperature 压低**（配置 `OPENAI_TEMPERATURE`，缺省 0.2）：产出是 JSONL，格式正确比文采重要。
 - **思考模式模型**：`deepseek-flash` 默认开思考，会先吐一大段 `reasoning_content`。思考内容**绝不进协议
   抽取器**，只单独作为 `model.reasoning` 事件透传，供客户端显示「正在思考」的中间状态。

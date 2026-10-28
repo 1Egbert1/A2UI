@@ -161,7 +161,11 @@ const ICON_ALIASES: Record<string, string[]> = {
   天气: ['Sunny', 'Cloudy'],
   晴: ['Sunny'],
   多云: ['Cloudy', 'MostlyCloudy', 'PartlyCloudy'],
-  雨: ['Drizzling'],
+  云: ['Cloudy', 'MostlyCloudy', 'PartlyCloudy'],
+  阴: ['Cloudy'],
+  雨: ['Drizzling', 'Pouring'],
+  小雨: ['Drizzling'],
+  大雨: ['Pouring'],
   月亮: ['Moon', 'MoonNight'],
   睡眠: ['MoonNight', 'Moon'],
   太阳: ['Sunny', 'Sunrise', 'Sunset'],
@@ -212,6 +216,25 @@ const ICON_ALIASES: Record<string, string[]> = {
   信号: ['Connection'],
 };
 
+/**
+ * 反查表：图标名 → 概念词。搜索时按「这个名字有哪些概念」取，不必每次遍历整张表
+ * （293 个名字 × 每次查询都过一遍 213 条别名，纯浪费）。
+ */
+const ICON_ALIAS_TERMS: ReadonlyMap<string, readonly string[]> = (() => {
+  const map = new Map<string, string[]>();
+  for (const [term, names] of Object.entries(ICON_ALIASES)) {
+    for (const name of names) {
+      const terms = map.get(name);
+      if (terms === undefined) {
+        map.set(name, [term]);
+      } else {
+        terms.push(term);
+      }
+    }
+  }
+  return map;
+})();
+
 const normalize = (text: string): string => text.toLowerCase().replace(/[\s_-]+/g, '');
 
 export interface IconSearchResult {
@@ -222,20 +245,76 @@ export interface IconSearchResult {
 }
 
 /**
- * 搜索图标名。中文概念走别名表，英文走名字子串，两者都支持。
+ * 把查询拆成若干个「概念」。
+ *
+ * 模型不会只问一个词 —— 它会写 `天气 晴 云`、`水 风 太阳`、`sunny cloud`。只按整串
+ * 匹配会让这类查询**全部落空**，而落空之后模型会转去 `listIcons` 逐个字母翻 293 个
+ * 图标名，把工具轮数烧光（线上 `AGENT_ERROR：工具调用连续 4 轮` 就是这条链路）。
+ */
+const splitQuery = (query: string): string[] =>
+  query
+    .split(/[\s,，、+|\/]+/)
+    .map((token) => token.trim())
+    .filter((token) => token !== '');
+
+/** 单个词对某个图标名的打分。整串与分词共用这一套规则，避免两处漂移。 */
+const scoreToken = (
+  name: string,
+  lowerName: string,
+  flatName: string,
+  token: string,
+): number => {
+  const lower = token.toLowerCase();
+  const flat = normalize(token);
+
+  let score = 0;
+  if (lowerName === lower) {
+    score = 1000;
+  } else if (flatName === flat) {
+    score = 950;
+  } else if (lowerName.startsWith(lower)) {
+    score = 700;
+  } else if (lowerName.includes(lower)) {
+    score = 500;
+  } else if (flatName.startsWith(flat)) {
+    score = 420;
+  } else if (flatName.includes(flat)) {
+    score = 300;
+  }
+
+  if (score < 900) {
+    // 别名整词命中（「购物车」）压过任何子串命中；别名被查询包含（「购物」）次之。
+    for (const term of ICON_ALIAS_TERMS.get(name) ?? []) {
+      if (term === token) {
+        score = Math.max(score, 900);
+      } else if (token.length >= 2 && term.includes(token)) {
+        score = Math.max(score, 600);
+      }
+    }
+  }
+
+  return score;
+};
+
+/** 多词命中同一个图标的加成：能同时答上两个概念的，排在只答上一个的前面。 */
+const MULTI_TOKEN_BONUS = 120;
+
+/**
+ * 搜索图标名。中文概念走别名表，英文走名字子串，两者都支持；**查询可以含多个概念**，
+ * 用空格 / 逗号 / 顿号 / 加号 / 竖线分隔即可（`天气 晴`、`cart, user`）。
  *
  * 打分只追求一个性质：**越"就是它"排越前**。精确 > 别名精确 > 前缀 > 包含，
  * 同分按字母序（稳定输出，便于测试与人工核对）。
  */
 export const searchIcons = (query: string, limit = 12): IconSearchResult => {
   const trimmed = query.trim();
-  if (trimmed === '') {
+  const tokens = splitQuery(trimmed);
+  if (trimmed === '' || tokens.length === 0) {
     return { query: trimmed, total: 0, icons: [] };
   }
 
   const cap = Math.min(Math.max(Math.trunc(limit) || 12, 1), 30);
-  const lower = trimmed.toLowerCase();
-  const flat = normalize(trimmed);
+  const single = tokens.length === 1;
   const scored: Array<{ name: string; score: number }> = [];
 
   for (const name of iconNames()) {
@@ -243,32 +322,23 @@ export const searchIcons = (query: string, limit = 12): IconSearchResult => {
     const flatName = normalize(name);
 
     let score = 0;
-    if (lowerName === lower) {
-      score = 1000;
-    } else if (flatName === flat) {
-      score = 950;
-    } else if (lowerName.startsWith(lower)) {
-      score = 700;
-    } else if (lowerName.includes(lower)) {
-      score = 500;
-    } else if (flatName.startsWith(flat)) {
-      score = 420;
-    } else if (flatName.includes(flat)) {
-      score = 300;
-    }
-
-    if (score < 900) {
-      // 别名整词命中（「购物车」）压过任何子串命中；别名被查询包含（「购物」）次之。
-      for (const [term, names] of Object.entries(ICON_ALIASES)) {
-        if (!names.includes(name)) {
-          continue;
-        }
-        if (term === trimmed) {
-          score = Math.max(score, 900);
-        } else if (trimmed.length >= 2 && term.includes(trimmed)) {
-          score = Math.max(score, 600);
+    if (single) {
+      // 单词查询与改造前逐字节等价：整串就是一个词。
+      score = scoreToken(name, lowerName, flatName, trimmed);
+    } else {
+      // 多词：逐个概念打分取最高，再按「答上了几个概念」加一点权重。
+      let best = 0;
+      let matched = 0;
+      for (const token of tokens) {
+        const tokenScore = scoreToken(name, lowerName, flatName, token);
+        if (tokenScore > 0) {
+          matched += 1;
+          if (tokenScore > best) {
+            best = tokenScore;
+          }
         }
       }
+      score = matched === 0 ? 0 : best + (matched - 1) * MULTI_TOKEN_BONUS;
     }
 
     if (score > 0) {
