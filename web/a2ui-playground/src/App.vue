@@ -3,7 +3,7 @@
     <header class="toolbar">
       <div class="titles">
         <h1>A2UI Playground</h1>
-        <p>a2ui-server（SSE · AG-UI）→ parseA2UI → hydrate → buildTree → SDK 回调 renderTree</p>
+        <p>对话生成界面 · 协议驱动 · 边收边长出</p>
       </div>
       <div class="actions">
         <el-select
@@ -11,8 +11,9 @@
           class="mock-select"
           size="default"
           popper-class="mock-select-popper"
-          placeholder="选择示例场景"
+          placeholder="示例场景"
           :disabled="sseActive || chatOnly"
+          title="载入一份内置示例（走的是和自由输入完全相同的 SSE 链路）"
         >
           <el-option
             v-for="scenario in scenarios"
@@ -28,18 +29,54 @@
             </div>
           </el-option>
         </el-select>
-        <el-button type="danger" plain @click="errorDialogVisible = true">
-          错误信息 ({{ errorList.length }})
-        </el-button>
-        <el-button
-          type="primary"
-          plain
+
+        <!--
+          调试入口收成一个下拉：错误 / Store / JSONL 都只在「查问题」时才用，
+          平铺在标题栏会把主操作（右侧输入框、左侧新开页面）的视觉权重压下去。
+        -->
+        <el-dropdown trigger="click" placement="bottom-end" @command="onDebugCommand">
+          <button
+            type="button"
+            class="tool-btn"
+            :class="{ 'tool-btn--alert': errorList.length > 0 }"
+          >
+            调试
+            <span v-if="errorList.length > 0" class="tool-btn__badge">
+              {{ errorList.length }}
+            </span>
+            <svg
+              viewBox="0 0 24 24"
+              width="13"
+              height="13"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          </button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="errors">
+                错误信息（{{ errorList.length }}）
+              </el-dropdown-item>
+              <el-dropdown-item command="store">查看 Store</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+
+        <button
+          type="button"
+          class="tool-btn"
           :disabled="!serverResult || serverResult.messages.length === 0"
+          title="取走当前这一页的完整协议 JSONL（可复制 / 下载）"
           @click="openJsonl(serverResult?.messages ?? [])"
         >
-          查看 JSONL
-        </el-button>
-        <el-button type="primary" @click="dialogVisible = true">查看 Store</el-button>
+          导出
+        </button>
       </div>
     </header>
 
@@ -51,11 +88,37 @@
     <div class="workspace">
       <section class="panel stage-panel">
         <div class="panel-header">
-          <div class="segmented">
+          <div class="stage-actions">
+            <!--
+              主操作放在预览卡片正上方：用户的动作是「想画一个新东西」，
+              入口就该在画布旁边，而不是藏在输入框角落的 + 图标里。
+            -->
             <button
               type="button"
-              class="segmented__item"
-              :class="{ 'segmented__item--active': picking }"
+              class="btn btn--ink"
+              :disabled="sseActive"
+              title="新开一张空白画布：清空预览与对话，换一个新会话（旧页会留一份可恢复）"
+              @click="startNewPage"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                width="14"
+                height="14"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.4"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M12 5v14" />
+                <path d="M5 12h14" />
+              </svg>
+              新开页面
+            </button>
+            <button
+              type="button"
+              class="btn btn--ghost"
+              :class="{ 'btn--on': picking }"
               :disabled="!treeRoot"
               :title="
                 picking
@@ -84,25 +147,64 @@
           <span class="tag">{{ stageTag }}</span>
         </div>
 
-        <div class="stage">
-          <!--
-            选取模式：开启后点击容器内任意位置，取最近的带 id 元素（withRootId 给每个
-            组件根元素加了 `surfaceId-componentId`），把 componentId 以 @id 加进输入框。
-            click 用 capture：选取模式下要**截获**点击，不让它触发组件自身的交互
-            （按钮动作 / 输入框聚焦 / 页签切换），否则「选元素」会顺手改界面。
-          -->
-          <div
-            ref="previewRef"
-            class="preview"
-            :class="{ 'preview--picking': picking }"
-            @click.capture="onPreviewClick"
-            @mouseover.capture="onPreviewHover"
-          ></div>
+        <!-- 清空后的恢复条：误触不该毁掉调了半天的页面，给一条可退回的路。 -->
+        <div v-if="restoreSnapshot" class="restore-bar">
+          <span>已清空当前页面</span>
+          <button type="button" class="restore-bar__undo" @click="restoreLastPage">
+            恢复上一页
+          </button>
+          <button
+            type="button"
+            class="restore-bar__close"
+            title="不再提示"
+            @click="restoreSnapshot = null"
+          >
+            ×
+          </button>
+        </div>
+
+        <div class="stage" :class="{ 'stage--empty': showCanvasEmpty }">
+          <div class="canvas">
+            <!--
+              选取模式：开启后点击容器内任意位置，取最近的带 id 元素（withRootId 给每个
+              组件根元素加了 `surfaceId-componentId`），把 componentId 以 @id 加进输入框。
+              click 用 capture：选取模式下要**截获**点击，不让它触发组件自身的交互
+              （按钮动作 / 输入框聚焦 / 页签切换），否则「选元素」会顺手改界面。
+            -->
+            <div
+              ref="previewRef"
+              class="preview"
+              :class="{ 'preview--picking': picking, 'preview--empty': !treeRoot }"
+              @click.capture="onPreviewClick"
+              @mouseover.capture="onPreviewHover"
+            ></div>
+
+            <!--
+              空状态盖在画布上（不是白板）：告诉用户「这里以后会有什么」，
+              并给三个可以直接点的起点 —— 第一次打开的人不该盯着空白猜该说什么。
+            -->
+            <div v-if="showCanvasEmpty" class="canvas-empty">
+              <span class="canvas-empty__mark" aria-hidden="true">✦</span>
+              <p class="canvas-empty__title">这一页是空的</p>
+              <p class="canvas-empty__desc">在右侧说一句，界面会在这里边收边长出来。</p>
+              <div class="canvas-empty__seeds">
+                <button
+                  v-for="seed in CANVAS_SEEDS"
+                  :key="seed"
+                  type="button"
+                  @click="useSeed(seed)"
+                >
+                  {{ seed }}
+                </button>
+              </div>
+            </div>
+          </div>
+
           <p v-if="picking" class="hint hint--picking">
             点击预览里的元素，把它的 id（如 @city）加到对话输入框；Esc 退出选取。平时也可按住 Alt 直接点击。
           </p>
-          <p v-else-if="!treeRoot" class="hint">
-            暂无可渲染的组件树：需要 beginRendering 让 surface 诞生，且组件类型已注册渲染器。
+          <p v-else-if="!treeRoot && sseActive" class="hint">
+            正在生成，第一块组件到达后这里会长出界面…
           </p>
 
           <details v-if="activeDataModel !== null" class="fold" open>
@@ -289,7 +391,7 @@
       <aside class="panel chat-panel">
         <div class="chat-header">
           <div class="chat-header__top">
-            <h2>想做什么界面？</h2>
+            <h2>{{ hasInterface ? '在这一页上继续改' : '想做什么界面？' }}</h2>
           </div>
           <!--
             「只跟模型说话」的开关已移除：这个 demo 只用来生成界面，不测纯对话。
@@ -300,14 +402,12 @@
 
         <div ref="chatScrollRef" class="chat">
           <div v-if="chatMessages.length === 0" class="chat-empty">
-            <p v-if="chatOnly">还没有对话。直接说一句话，模型的原话会显示在气泡里。</p>
-            <p v-else>还没有对话。试着输入「做一个购物车」或者「列出三个水果」。</p>
-            <p class="chat-empty__note">
-              默认打本机 <code>{{ SERVER_BASE }}</code>。{{
-                chatOnly
-                  ? '这条路不产出任何 A2UI 协议消息。'
-                  : '第二轮回来的是增量消息，只含改动的组件。'
-              }}
+            <p class="chat-empty__title">一句话开始</p>
+            <p class="chat-empty__line">
+              说清楚要什么，模型直接产出界面——布局、文案、图标都在里面。
+            </p>
+            <p class="chat-empty__line chat-empty__line--weak">
+              第一轮整页生成；之后每轮只回改动的组件，预览原地更新。
             </p>
           </div>
 
@@ -408,28 +508,24 @@
 
         <p v-if="serverError" class="server-error">请求失败：{{ serverError }}</p>
 
-        <div class="composer" @keydown.enter.exact.prevent="sendMessage" @paste="onComposerPaste">
+        <!--
+          常见改法：给「不知道该怎么说」的人一个起点。只在有界面时出现 ——
+          空画布阶段该说的是「要什么界面」，不是「改哪一处」。
+        -->
+        <div v-if="hasInterface && !sseActive" class="seed-row">
+          <span class="seed-row__label">常见改法</span>
           <button
+            v-for="seed in TWEAK_SEEDS"
+            :key="seed"
             type="button"
-            class="composer__ghost"
-            title="新会话（清空对话并换一个 threadId）"
-            :disabled="sseActive"
-            @click="startNewServerSession"
+            class="seed"
+            @click="useSeed(seed)"
           >
-            <svg
-              viewBox="0 0 24 24"
-              width="17"
-              height="17"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              aria-hidden="true"
-            >
-              <path d="M12 5v14" />
-              <path d="M5 12h14" />
-            </svg>
+            {{ seed }}
           </button>
+        </div>
+
+        <div class="composer" @keydown.enter.exact.prevent="sendMessage" @paste="onComposerPaste">
 
           <el-input
             ref="composerRef"
@@ -438,8 +534,8 @@
             type="textarea"
             :autosize="{ minRows: 1, maxRows: 5 }"
             resize="none"
-            placeholder="说点什么…（可粘贴或附上图片，让模型据此生成界面）"
-            title="Enter 发送，Shift + Enter 换行"
+            placeholder="说一句你要的界面，或要改的地方…"
+            title="Enter 发送，Shift + Enter 换行；可粘贴或附上图片，让模型据此生成界面"
             :disabled="sseActive"
           />
 
@@ -550,13 +646,20 @@
               重新载入场景
             </el-button>
             <span v-if="serverResult || sseActive" class="chat-meta">
-              thread <code>{{ serverResult?.sessionId || serverThreadId }}</code>
-              · surface <code>{{ serverResult?.surfaceId || '等待 a2ui.surface…' }}</code>
-              · provider <code>{{ serverResult?.provider || '—' }}</code>
-              · 消息 <strong>{{ serverResult?.messages.length ?? 0 }}</strong> 条
-              <template v-if="!sseActive && serverElapsed > 0">
-                · 耗时 <strong>{{ serverElapsed }}</strong> ms
-              </template>
+              <!-- 按「一段不断行」切块：否则窄栏里会把「消息」和「20 条」拆到两行。 -->
+              <span class="chat-meta__seg">
+                thread <code>{{ serverResult?.sessionId || serverThreadId }}</code>
+              </span>
+              <span class="chat-meta__seg">
+                surface <code>{{ serverResult?.surfaceId || '等待 a2ui.surface…' }}</code>
+              </span>
+              <span class="chat-meta__seg">
+                <strong>{{ serverResult?.messages.length ?? 0 }}</strong> 条协议消息
+              </span>
+              <span v-if="!sseActive && serverElapsed > 0" class="chat-meta__seg">
+                耗时 <strong>{{ serverElapsed }}</strong> ms
+              </span>
+              <span class="chat-meta__seg">provider <code>{{ serverResult?.provider || '—' }}</code></span>
             </span>
           </template>
         </div>
@@ -955,6 +1058,48 @@ const previewSource = ref<'api' | 'stream'>('api');
  */
 const SERVER_BASE = String(import.meta.env.VITE_A2UI_SERVER ?? 'http://localhost:3000');
 
+/**
+ * 空画布上那三个起点。
+ *
+ * 它们的用途是**让第一次打开的人知道该说什么** —— 一个空输入框配一句「说点什么」，
+ * 大多数人会关掉页面。文案刻意选三个形态差别大的（表单流 / 看板 / 预订），
+ * 一眼就能看出「这东西能生成的不止一种页面」。
+ */
+const CANVAS_SEEDS = ['外卖订单详情页', '销售数据看板', '酒店预订页'] as const;
+
+/**
+ * 「常见改法」那四个胶囊：只在有界面时出现，说的是「怎么改这一页」而不是「要什么」。
+ * 都是**结构或样式级的增量**，正好落在增量修改能力之内。
+ */
+const TWEAK_SEEDS = ['改顶部文案', '换主色调', '把 15 天改成 7 天', '加一屏空气质量'] as const;
+
+/** 把一颗胶囊填进输入框并聚焦：用户下一步是补一句自己的话，不是直接发。 */
+const useSeed = (text: string): void => {
+  chatInput.value = text;
+  composerRef.value?.focus?.();
+};
+
+/** 当前是否有「可修改的界面」：接口跑出来的、且服务端给了会话。 */
+const hasInterface = computed(
+  () => previewSource.value === 'api' && (serverResult.value?.sessionId ?? '') !== '',
+);
+
+/** 空画布只在「没有树、也没有在生成」时出现，避免和流式中的占位提示打架。 */
+const showCanvasEmpty = computed(() => treeRoot.value === null && !sseActive.value);
+
+/**
+ * 「新开页面」清掉的那一页，留一份可恢复的快照。
+ *
+ * 只存协议消息（不含渲染结果）：恢复时重新 ingest 一遍，走的是和首次渲染同一条路。
+ */
+const restoreSnapshot = ref<{
+  sessionId: string;
+  surfaceId: string;
+  provider: string;
+  warnings: string[];
+  messages: unknown[];
+} | null>(null);
+
 /** 输入框内容。发送后立即清空。 */
 const chatInput = ref('');
 
@@ -1086,13 +1231,11 @@ const chatOnly = ref(false);
  *
  * 两者的行为差别很大（增量覆盖 vs 整页重画），不该让用户靠猜。
  */
-const chatHint = computed(() => {
-  const hasInterface =
-    previewSource.value === 'api' && (serverResult.value?.sessionId ?? '') !== '';
-  return hasInterface
-    ? '描述要改的地方，我会在这一页上做增量修改（只发变化的组件，不重画整页）。点「选择元素」可用 @id 指到具体组件。'
-    : '描述一句，我会在左边预览里生成界面。同一个 threadId 连续发送即多轮。';
-});
+const chatHint = computed(() =>
+  hasInterface.value
+    ? '说清楚要改哪儿，我只发变化的组件、不重画整页。点「选择元素」可用 @id 指到具体组件。'
+    : '描述一句你要的界面，它会在这里边收边长出来。第一轮是整页生成。',
+);
 /** 最近一次对话用的模型名（来自 `model.info` 事件），底栏显示。 */
 const chatModel = ref('');
 /** 聊天区的滚动容器：新内容到达时自动贴底。 */
@@ -1301,6 +1444,22 @@ const openJsonl = (messages: unknown[]): void => {
 };
 
 /**
+ * 顶部「调试」下拉的分发。
+ *
+ * 三个入口本来就在页面上（各自一枚按钮），收进下拉只是**降权**，不是新功能 ——
+ * 所以这里不引入任何新状态，只负责把已有的弹窗打开。
+ */
+const onDebugCommand = (command: string): void => {
+  if (command === 'errors') {
+    errorDialogVisible.value = true;
+    return;
+  }
+  if (command === 'store') {
+    dialogVisible.value = true;
+  }
+};
+
+/**
  * 复制整段 JSONL。
  *
  * 弹窗里的 `<pre>` 要手动选中 3 万多字符才能取走 —— 那等于没有出口：拿一份完整
@@ -1479,17 +1638,14 @@ const treeRoot = computed(
 const countNodes = (node: TreeNode): number =>
   1 + node.children.reduce((sum, child) => sum + countNodes(child), 0);
 
-const treeLabel = computed(() => {
-  const root = treeRoot.value;
-  if (!root) return '暂无组件树';
-  return `${root.componentId} · 直接子 ${root.children.length} / 节点合计 ${countNodes(root)}`;
-});
-
-/** 面板右上角那枚 tag：跟着当前 tab 换口径。 */
-/** 面板右上角那枚 tag：组件树规模 + 当前的返回方式。 */
+/**
+ * 面板右上角那枚 tag：**人话**（这一页有多少组件 + 怎么回来的），
+ * 不是内部字段名。`root · 直接子 6 / 节点合计 9` 那种口径留在组件树折叠块里给调试用。
+ */
 const stageTag = computed(() => {
-  const mode = streamSimOn.value ? '流式返回' : '整体返回';
-  return `${treeLabel.value} · ${mode}`;
+  const mode = streamSimOn.value ? '流式' : '整体';
+  const root = treeRoot.value;
+  return root === null ? `空画布 · ${mode}` : `${countNodes(root)} 个组件 · ${mode}`;
 });
 
 /**
@@ -1997,6 +2153,77 @@ const startNewServerSession = () => {
   activeAgentIndex = -1;
 };
 
+/**
+ * 「新开页面」：把画布清成一张白纸，下一句话从零生成。
+ *
+ * 这是**唯一**能让预览空掉的入口 —— 在此之前用户只能靠对模型说「生成一个新页面」，
+ * 而那句话在「打当前会话」的链路里其实是增量修改，模型得靠猜才知道该重画。
+ *
+ * 清空前把当前这一页的协议消息留一份（`restoreSnapshot`），误触可以一键退回来：
+ * 清空是必要的（不然「新画布」这个状态不成立），但不可撤销的清空没人敢点。
+ *
+ * `scenarioId` 一并清空：下拉里还挂着已载入示例的话，「新开页面」看起来像没生效。
+ */
+const startNewPage = () => {
+  if (sseActive.value) {
+    return;
+  }
+
+  const current = serverResult.value;
+  restoreSnapshot.value =
+    current !== null && current.messages.length > 0
+      ? {
+          sessionId: current.sessionId,
+          surfaceId: current.surfaceId,
+          provider: current.provider,
+          warnings: [...current.warnings],
+          messages: current.messages.map((item) => JSON.parse(JSON.stringify(item)) as unknown),
+        }
+      : null;
+
+  // resetStream 会停掉在途的流 + clearStore()（预览随之清空）+ 归零游标。
+  resetStream();
+  startNewServerSession();
+  scenarioId.value = '';
+  // 下一轮必须是「新会话」：留着旧 threadId 会让服务端按增量处理，回来没有 beginRendering。
+  lastRunThreadId = '';
+  previewSource.value = 'api';
+  chatInput.value = '';
+  // 焦点直接进输入框：清空之后下一步必然是「说要什么」，不该再让用户点一次。
+  composerRef.value?.focus?.();
+};
+
+/**
+ * 恢复「新开页面」清掉的那一页：把快照里的协议消息原样重放进同一条 JSONL 流。
+ *
+ * 走 `stream.push()` 而不是直接改 store —— 重放和首次渲染经过的是同一条 ingest 路径，
+ * 组件树、数据模型、入场动画都不会因为「恢复」而和正常加载有差别。
+ */
+const restoreLastPage = () => {
+  const snapshot = restoreSnapshot.value;
+  if (snapshot === null) {
+    return;
+  }
+
+  resetStream();
+  for (const message of snapshot.messages) {
+    stream.push(`${JSON.stringify(message)}\n`);
+  }
+
+  previewSource.value = 'api';
+  // 让后续对话仍打到这一页所属的会话：否则模型看不见它，一说就是重画。
+  lastRunThreadId = snapshot.sessionId;
+  serverThreadId.value = snapshot.sessionId;
+  serverResult.value = {
+    sessionId: snapshot.sessionId,
+    surfaceId: snapshot.surfaceId,
+    provider: snapshot.provider,
+    warnings: [...snapshot.warnings],
+    messages: snapshot.messages.map((item) => JSON.parse(JSON.stringify(item)) as unknown),
+  };
+  restoreSnapshot.value = null;
+};
+
 /** 重新载入当前场景（选同一个场景不会再触发 `watch`，所以需要这个显式出口）。 */
 const reloadScenario = () => {
   if (scenarioId.value !== '') {
@@ -2214,6 +2441,8 @@ const handleAgUiEvent = (event: AgUiSseEvent): void => {
       warnings: [],
     };
     previewSource.value = 'api';
+    // 新的一轮真的产出 surface 了：上一页的恢复快照到此过期，别留一条会误导人的「恢复」。
+    restoreSnapshot.value = null;
     return;
   }
 
@@ -2684,22 +2913,45 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-/* 整页不滚：滚动交给左右两栏各自的内部区域，这样聊天栏才能固定在右侧。
-   `box-sizing: border-box` 不能省 —— 否则 100vh + padding 会溢出、凭空多出一条滚动条。 */
+/*
+ * 设计变量集中在这里。
+ *
+ * 换皮肤的动机不是「好看」：默认皮肤下 #409eff 一个蓝色包打天下（按钮、开关、标签、
+ * 链接、选中态全用它），整页只有一个颜色层次，读起来像组件库示例而不像产品。
+ * 这里的规矩是「一个实心主色 + 一个强调色」：主色近黑（只给最该点的那个按钮），
+ * 强调色靛蓝只留给开关与聚焦环，其余全部是中性灰阶。
+ */
 .playground {
+  --ink: #101828;
+  --ink-2: #475467;
+  --muted: #98a2b3;
+  --line: #e8ebf0;
+  --line-strong: #dde2ea;
+  --surface: #ffffff;
+  --sunken: #f7f8fa;
+  --accent: #4f46e5;
+  --radius-control: 8px;
+  --radius-card: 14px;
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow-float: 0 8px 24px rgba(16, 24, 40, 0.08);
+  --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: 0.85rem;
   box-sizing: border-box;
   height: 100vh;
-  padding: 1.25rem 1.5rem;
+  padding: 1.1rem 1.35rem 1.25rem;
+  background: var(--sunken);
   font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  color: #1f2937;
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
 }
 
+/* 整条顶栏不画分隔线：靠留白和字重分层，比一条灰线干净。 */
 .toolbar {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   gap: 1rem;
   flex: 0 0 auto;
@@ -2708,42 +2960,114 @@ onBeforeUnmount(() => {
 .actions {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.45rem;
   flex-shrink: 0;
 }
 
 .mock-select {
-  width: 230px;
+  width: 168px;
+}
+
+/* 顶栏下拉统一到 8px 圆角、32px 高：EP 默认是 4px 方角 + 34px，
+   和右边的按钮并排时高度对不齐，一眼能看出来是「两个库拼的」。 */
+.actions :deep(.el-select__wrapper) {
+  min-height: 32px;
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--line-strong) inset;
+  font-size: 0.8rem;
+}
+
+.actions :deep(.el-select__wrapper.is-focused) {
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+/* 顶栏的次要按钮（调试 / 导出）：白底、细描边、小一号 —— 与「新开页面」形成主次。 */
+.tool-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  height: 32px;
+  padding: 0 0.7rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-family: inherit;
+  font-size: 0.8rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.tool-btn:hover:not(:disabled) {
+  border-color: #c3cbd8;
+  color: var(--ink);
+}
+
+.tool-btn:disabled {
+  color: #b6becb;
+  background: #f2f4f7;
+  cursor: not-allowed;
+}
+
+/* 有错误时按钮自己变红：否则「调试」是个没人点的黑盒，问题会一直躺着。 */
+.tool-btn--alert {
+  border-color: #f3c9c9;
+  color: #b42318;
+}
+
+.tool-btn__badge {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #d92d20;
+  color: #ffffff;
+  font-size: 0.68rem;
+  line-height: 16px;
+  text-align: center;
 }
 
 .titles h1 {
   margin: 0;
-  font-size: 1.4rem;
+  font-size: 1.05rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
 }
 
 .titles p {
-  margin: 0.35rem 0 0;
-  color: #6b7280;
-  font-size: 0.82rem;
+  margin: 0.2rem 0 0;
+  color: var(--muted);
+  font-size: 0.76rem;
 }
 
 /* `box-sizing: border-box` 必须显式写：默认的 `content-box` 下，右栏的
-   `max-width: 380px` 只管内容盒，再叠上 1.25rem×2 的 padding 与 1px 边框，
+   `max-width: 380px` 只管内容盒，再叠上 padding 与 1px 边框，
    实际占位会变成 422px（实测）。 */
 .panel {
   box-sizing: border-box;
-  padding: 1.25rem;
-  border: 1px solid #e5e7eb;
-  border-radius: 12px;
-  background: #ffffff;
+  padding: 0.95rem 1rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
 }
 
 .panel-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
-  margin-bottom: 1rem;
+  gap: 0.75rem;
+  margin-bottom: 0.8rem;
+}
+
+/* 面板头部左侧的控件组：主操作在最左，其余按「越常用越靠左」排。 */
+.stage-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
 }
 
 .panel-header h2 {
@@ -2751,12 +3075,16 @@ onBeforeUnmount(() => {
   font-size: 1.05rem;
 }
 
+/* 右上角那枚 tag 是**读数**不是按钮：等宽字体 + 浅底，一眼能和可点的东西分开。 */
 .tag {
-  padding: 0.15rem 0.55rem;
-  border-radius: 999px;
-  background: #ecf5ff;
-  color: #409eff;
-  font-size: 0.75rem;
+  flex: 0 0 auto;
+  padding: 0.15rem 0.5rem;
+  border-radius: 6px;
+  background: #f2f4f7;
+  color: #667085;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  white-space: nowrap;
 }
 
 .alert-list {
@@ -2814,12 +3142,117 @@ onBeforeUnmount(() => {
   text-align: center;
 }
 
+/* 画布容器：空状态要**盖在画布上**（而不是把画布撑开），所以这里只做定位参照。 */
+.canvas {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+/*
+ * 只有**空画布**时才把舞台变成弹性容器：那张点阵纸要铺满可视高度，否则下面留一大片白，
+ * 看起来像没加载完。
+ *
+ * 有内容时**不能**这样：舞台里还挂着数据模型 / 组件树这些折叠块，画布在 flex 里会被
+ * 它们挤到 0 高（实测 canvas 高 0、内容 374 溢出），页面边缘会冒出竖排的残字。
+ * 所以这里按「空/非空」分档，不给折叠块和画布抢高度的机会。
+ */
+.stage-panel > .stage.stage--empty {
+  display: flex;
+  flex-direction: column;
+}
+
+.stage-panel > .stage.stage--empty > .canvas {
+  flex: 1 1 auto;
+  min-height: 240px;
+}
+
+.stage-panel > .stage.stage--empty > .fold {
+  flex: 0 0 auto;
+}
+
 .preview {
+  flex: 1 1 auto;
   min-height: 72px;
-  padding: 1.25rem;
-  border: 1px dashed #dcdfe6;
-  border-radius: 8px;
-  background: #fbfdff;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+/* 空画布：点阵底 + 去边框。点阵是「这里是可以画东西的空白」的暗示，
+   比一个空的白盒子（或一句灰字提示）更容易让人下手。 */
+.preview--empty {
+  min-height: 320px;
+  padding: 0;
+  border-color: transparent;
+  background-color: #fbfcfd;
+  background-image: radial-gradient(circle, #dde3ec 1px, transparent 1px);
+  background-size: 16px 16px;
+  background-position: 4px 4px;
+}
+
+.canvas-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  padding: 1rem;
+  /* 覆盖层不该吃掉画布上的点击（Alt + 点击选元素仍要能落在空白处）。 */
+  pointer-events: none;
+}
+
+.canvas-empty > * {
+  pointer-events: auto;
+}
+
+.canvas-empty__mark {
+  font-size: 1.05rem;
+  color: #c7cedb;
+  line-height: 1;
+}
+
+.canvas-empty__title {
+  margin: 0.15rem 0 0;
+  color: #667085;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.canvas-empty__desc {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.canvas-empty__seeds {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.4rem;
+  margin-top: 0.55rem;
+}
+
+.canvas-empty__seeds button {
+  height: 28px;
+  padding: 0 0.65rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-2);
+  font-family: inherit;
+  font-size: 0.76rem;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, box-shadow 0.15s;
+}
+
+.canvas-empty__seeds button:hover {
+  border-color: #c3cbd8;
+  color: var(--ink);
+  box-shadow: var(--shadow-card);
 }
 
 /* 选取模式：容器内一律十字光标，暗示「这是在选择而不是在操作」。 */
@@ -2971,34 +3404,127 @@ onBeforeUnmount(() => {
   min-height: 340px;
 }
 
-/* 分段控件：两个 button 手写，不用 el-tabs —— 它的头部在窄面板里太占高度。 */
-.segmented {
+/* 面板头部的按钮：只用三级 —— 实心（主操作）/ 描边（次操作）/ 无边框（文字）。
+   三级就够表达层级了，再多的变体只会让人猜哪个才是下一步。 */
+.btn {
   display: inline-flex;
-  padding: 0.15rem;
-  border-radius: 8px;
-  background: #f1f5f9;
-}
-
-.segmented__item {
-  padding: 0.25rem 0.7rem;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: #64748b;
+  align-items: center;
+  gap: 0.28rem;
+  height: 30px;
+  padding: 0 0.7rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
   font-family: inherit;
   font-size: 0.8rem;
+  line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 
-.segmented__item:hover:not(.segmented__item--active) {
-  color: #1f2937;
+.btn--ink {
+  background: var(--ink);
+  color: #ffffff;
+  font-weight: 500;
 }
 
-.segmented__item--active {
-  background: #ffffff;
-  color: #1f2937;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+.btn--ink:hover:not(:disabled) {
+  background: #1d2939;
+}
+
+.btn--ghost {
+  border-color: var(--line-strong);
+  background: var(--surface);
+  color: var(--ink-2);
+}
+
+.btn--ghost:hover:not(:disabled) {
+  border-color: #c3cbd8;
+  color: var(--ink);
+}
+
+/* 「选取中」是**进行中的模式**，不是禁用态：给它一个明确的选中底色。 */
+.btn--on {
+  border-color: #c7d2fe;
+  background: #eef2ff;
+  color: #3730a3;
+}
+
+.btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+/* 清空后的恢复条：只出现一次，给一条可退回的路。 */
+.restore-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.7rem;
+  padding: 0.35rem 0.5rem 0.35rem 0.6rem;
+  border: 1px solid #e3e8f0;
+  border-radius: var(--radius-control);
+  background: #f8fafc;
+  color: var(--ink-2);
+  font-size: 0.76rem;
+}
+
+.restore-bar__undo {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-family: inherit;
+  font-size: 0.76rem;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.restore-bar__close {
+  margin-left: auto;
+  padding: 0 0.15rem;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+/* 「常见改法」胶囊：贴着输入框，只在有界面时出现。 */
+.seed-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.6rem;
+}
+
+.seed-row__label {
+  flex: 1 0 100%;
+  margin-bottom: -0.1rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.seed {
+  height: 26px;
+  padding: 0 0.55rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-2);
+  font-family: inherit;
+  font-size: 0.74rem;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.seed:hover {
+  border-color: #c3cbd8;
+  background: #fafbfc;
+  color: var(--ink);
 }
 
 /* 「Stream 模拟」开关：与「选择元素」并排，开关在右、标签在左，视觉上是一枚控件。 */
@@ -3006,15 +3532,26 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
-  padding: 0 0.35rem 0 0.55rem;
-  margin-left: 0.35rem;
-  height: 1.85rem;
-  border-radius: 8px;
+  height: 30px;
+  padding: 0 0.55rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
   cursor: pointer;
   user-select: none;
-  color: #475569;
-  font-size: 0.82rem;
+  color: var(--ink-2);
+  font-size: 0.78rem;
   white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.stream-switch:hover {
+  background: #f7f8fa;
+}
+
+/* 开关用强调色，不用主色（近黑）—— 近黑填充的胶囊看起来像「禁用」。 */
+.stream-switch :deep(.el-switch.is-checked .el-switch__core) {
+  border-color: var(--accent);
+  background-color: var(--accent);
 }
 
 .stream-switch__text {
@@ -3064,20 +3601,22 @@ onBeforeUnmount(() => {
 /* ── 右侧聊天侧栏 ── */
 
 .chat-header {
-  padding-bottom: 0.75rem;
-  border-bottom: 1px solid #eef1f5;
+  padding-bottom: 0.7rem;
+  border-bottom: 1px solid var(--line);
 }
 
 .chat-header h2 {
   margin: 0;
-  font-size: 1rem;
+  font-size: 0.95rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
 }
 
 .chat-header p {
   margin: 0.3rem 0 0;
-  color: #6b7280;
-  font-size: 0.78rem;
-  line-height: 1.5;
+  color: #667085;
+  font-size: 0.76rem;
+  line-height: 1.55;
 }
 
 /* 标题与开关同一行：开关决定「这一栏现在是哪种模式」，贴在标题右侧最省地方。 */
@@ -3117,31 +3656,51 @@ onBeforeUnmount(() => {
 }
 
 .chat-empty {
-  margin: 0;
-  color: #6b7280;
-  font-size: 0.82rem;
-  line-height: 1.6;
+  margin: 0.2rem 0 0;
+  color: #667085;
+  font-size: 0.8rem;
+  line-height: 1.65;
 }
 
 .chat-empty p {
   margin: 0;
 }
 
-/* 写成 `p.chat-empty__note` 是为了和上面的 `.chat-empty p` 同权重 —— 单写类名权重更低，
-   会被 `margin: 0` 整个盖掉，0.4rem 的行距就不生效了。 */
-.chat-empty p.chat-empty__note {
-  margin-top: 0.4rem;
-  color: #9ca3af;
+/* 写成 `p.chat-empty__x` 是为了和上面的 `.chat-empty p` 同权重 —— 只写类名权重更低，
+   会被 `margin: 0` 整个盖掉。 */
+.chat-empty p.chat-empty__title {
+  margin-bottom: 0.3rem;
+  color: var(--ink);
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.chat-empty p.chat-empty__line--weak {
+  margin-top: 0.35rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+/* 底栏那串读数：按段换行，段内不断行 —— 否则窄栏会把「消息」和「20 条」拆到两行。 */
+.chat-meta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.1rem 0.55rem;
+  min-width: 0;
+}
+
+.chat-meta__seg {
+  white-space: nowrap;
 }
 
 .chat-empty code,
 .chat-meta code {
   padding: 0.05rem 0.35rem;
   border-radius: 4px;
-  background: #eef2f7;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.74rem;
-  color: #374151;
+  background: #f2f4f7;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: #475467;
 }
 
 .chat-row {
@@ -3301,17 +3860,19 @@ onBeforeUnmount(() => {
 .composer {
   display: flex;
   align-items: flex-end;
-  gap: 0.35rem;
-  margin-top: 0.75rem;
-  padding: 0.3rem 0.3rem 0.3rem 0.35rem;
-  border: 1px solid #e5e7eb;
-  border-radius: 22px;
+  gap: 0.3rem;
+  margin-top: 0.6rem;
+  padding: 0.3rem 0.3rem 0.3rem 0.45rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
   background: #ffffff;
-  transition: border-color 0.15s;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 
+/* 聚焦环用强调色 + 3px 淡光：比只把描边变蓝更容易看出「现在是在这里打字」。 */
 .composer:focus-within {
-  border-color: #a9c9f5;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
 }
 
 /* 把 Element Plus textarea 自带的边框 / 阴影抹掉，外观交给外层药丸。 */
@@ -3336,7 +3897,6 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
-.composer__ghost,
 .composer__send {
   flex: 0 0 auto;
   display: grid;
@@ -3345,37 +3905,21 @@ onBeforeUnmount(() => {
   height: 2rem;
   border: none;
   border-radius: 50%;
+  /* 跟「新开页面」同一个近黑色：一页里只允许两个实心深色按钮，
+     再多就没有「最该点哪儿」了。 */
+  background: var(--ink);
+  color: #ffffff;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
 
-.composer__ghost {
-  background: transparent;
-  color: #94a3b8;
-}
-
-.composer__ghost:hover:not(:disabled) {
-  background: #f1f5f9;
-  color: #475569;
-}
-
-.composer__ghost:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.composer__send {
-  background: #2563eb;
-  color: #ffffff;
-}
-
 .composer__send:hover:not(:disabled) {
-  background: #1d4ed8;
+  background: #1d2939;
 }
 
 .composer__send:disabled {
-  background: #e5e7eb;
-  color: #b6bdc9;
+  background: #eceef2;
+  color: #b6becb;
   cursor: not-allowed;
 }
 
@@ -3475,16 +4019,18 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 0.25rem 0.6rem;
-  margin-top: 0.45rem;
-  color: #6b7280;
-  font-size: 0.76rem;
+  gap: 0.2rem 0.55rem;
+  margin-top: 0.4rem;
+  color: var(--muted);
+  font-size: 0.7rem;
+  line-height: 1.5;
 }
 
 .chat-footer :deep(.el-button) {
   height: auto;
   padding: 0;
-  font-size: 0.76rem;
+  color: var(--accent);
+  font-size: 0.7rem;
 }
 
 .server-error {
