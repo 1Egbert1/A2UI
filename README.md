@@ -148,7 +148,11 @@ Vite + Vue3 应用，通过 Vite alias 直接引用各包 `src`，改 SDK 无需
 
 主要职责及详细功能：
 
-1. **示例场景全走接口** —— 顶部下拉的示例由服务端提供（`GET /api/a2ui/scenarios`），选中即走一次 SSE 运行。示例数据与自由输入共用同一条链路，**不存在「本地渲染」的第二套**。当前只保留一份示例：**天气页（武汉）**，它是一次真实生成的结果，含 15 天预报 / 逐小时 / 生活服务与四个本地动作。
+1. **示例场景全走接口** —— 顶部下拉的示例由服务端提供（`GET /api/a2ui/scenarios`），选中即走一次 SSE 运行。示例数据与自由输入共用同一条链路，**不存在「本地渲染」的第二套**。当前保留两份，刚好是一组对照：
+   - **天气页（武汉）**：一次真实生成的原样结果，含 15 天预报 / 逐小时 / 生活服务与四个本地动作；
+   - **落地页（WorkBuddy）**：一份「看起来完整、其实渲染不出来」的生成结果**补齐后**的版本
+     （补 root / `beginRendering` / 数据模型 / 6 处列表与图标），评审过程见
+     [`docs/a2ui-generation-review.md`](docs/a2ui-generation-review.md)。
 2. 通过对话方式，让 AI Agent 生成对应的 UI 界面
 3. 预览生成的页面
 4. 支持多轮对话增量调整界面
@@ -174,7 +178,7 @@ Vite + Vue3 应用，通过 Vite alias 直接引用各包 `src`，改 SDK 无需
 
    入站接受三种形状：AG-UI 的 `RunAgentInput`（`threadId` / `runId` / `messages`）、
    简写 `{ message }`、示例场景 `{ scenario }`。三者最终汇成同一份入参。
-2. **示例场景**：内置 fixture（来自 `a2ui-core/mock`，当前是天气页一份）经接口提供 ——
+2. **示例场景**：内置 fixture（来自 `a2ui-core/mock`，当前两份：天气页、落地页）经接口提供 ——
    `GET /api/a2ui/scenarios` 列场景、`GET /api/a2ui/scenarios/:id` 取原始素材、
    `GET /api/a2ui/scenarios/:id/stream` 把素材按固定块长**字符级**吐出来（`?order=` / `?chunk=` / `?delay=` 可调）、
    `run` 带 `scenario` 即由 fixture 产出。三条刻意的规则：**场景永远走 fixture，与

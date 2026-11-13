@@ -66,6 +66,11 @@ const TABLE: Array<{ id: string; desc: string; lines: string[] }> = [
     desc: '天气页（武汉）：真实生成结果，含 15 天预报 / 逐小时 / 生活服务与本地动作',
     lines: coreMock.weatherMessages,
   },
+  {
+    id: 'workbuddy',
+    desc: '落地页：把一份缺 root / 缺 beginRendering 的生成结果补齐后的版本（List 模板 + 图标 + 动作）',
+    lines: coreMock.workbuddyMessages,
+  },
 ];
 
 /** 全部场景，顺序即下拉顺序。 */

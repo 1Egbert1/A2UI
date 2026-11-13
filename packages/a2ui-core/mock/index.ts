@@ -16,3 +16,4 @@ export * from './list-template';
 export * from './shopping-cart';
 export * from './local-action';
 export * from './weather';
+export * from './workbuddy';
