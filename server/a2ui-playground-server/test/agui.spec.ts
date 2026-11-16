@@ -268,3 +268,23 @@ describe('agui / 协议体检（画不出来但没有错误）', () => {
     assert.deepEqual(warningsOf(events), []);
   });
 });
+
+describe('agui / warning 分级', () => {
+  it('事件里带 kind：recovered 是「修好了」，dropped 是「内容没了」', async () => {
+    const agent = scriptedAgent('openai', async function* () {
+      yield { warning: '对象少了一个闭合 `}`，已补上', warningKind: 'recovered' };
+      yield { warning: 'JSON 解析失败 — x', warningKind: 'dropped' };
+      yield { message: { beginRendering: { surfaceId: 'sf-1', root: 'root' } } };
+    });
+
+    const { events } = await collect(agent);
+    const kinds = events
+      .filter(
+        (event): event is Extract<AgUiEvent, { type: 'CUSTOM' }> =>
+          event.type === 'CUSTOM' && event.name === A2UI_CUSTOM_EVENT.warning,
+      )
+      .map((event) => (event.value as { kind?: string }).kind);
+
+    assert.deepEqual(kinds, ['recovered', 'dropped']);
+  });
+});

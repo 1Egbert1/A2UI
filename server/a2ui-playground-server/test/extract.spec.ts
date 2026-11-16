@@ -78,7 +78,7 @@ describe('extract / extractLine', () => {
   it('坏 JSON 记 warning 不抛错', () => {
     const result = extractLine('{"beginRendering":');
     assert.equal(result.messages.length, 0);
-    assert.match(result.warnings[0], /JSON 解析失败/);
+    assert.match(result.warnings[0]?.message ?? '', /JSON 解析失败/);
   });
 
   it('数组元素后多一个 } 时自动修复并采纳', () => {
@@ -94,7 +94,7 @@ describe('extract / extractLine', () => {
     if ('surfaceUpdate' in message) {
       assert.equal(message.surfaceUpdate.components.length, 1);
     }
-    assert.match(result.warnings[0] ?? '', /多了一个 `}`/);
+    assert.match(result.warnings[0]?.message ?? '', /多了一个 `}`/);
   });
 
   it('对象少一个闭合 } 时自动修复并采纳', () => {
@@ -105,7 +105,7 @@ describe('extract / extractLine', () => {
     const result = extractLine(bad);
 
     assert.equal(result.messages.length, 1);
-    assert.match(result.warnings[0] ?? '', /少了一个闭合 `}`/);
+    assert.match(result.warnings[0]?.message ?? '', /少了一个闭合 `}`/);
   });
 
   it('结尾少一组闭合 ]} 时自动修复并采纳', () => {
@@ -116,7 +116,7 @@ describe('extract / extractLine', () => {
     const result = extractLine(bad);
 
     assert.equal(result.messages.length, 1);
-    assert.match(result.warnings[0] ?? '', /少了一组闭合 `]}`/);
+    assert.match(result.warnings[0]?.message ?? '', /少了一组闭合 `]}`/);
   });
 
   it('结尾整段缺失（少 ]}} 三层）时按栈补齐', () => {
@@ -127,7 +127,7 @@ describe('extract / extractLine', () => {
     const result = extractLine(bad);
 
     assert.equal(result.messages.length, 1);
-    assert.match(result.warnings[0] ?? '', /结尾缺少 3 个闭合符/);
+    assert.match(result.warnings[0]?.message ?? '', /结尾缺少 3 个闭合符/);
   });
 
   it('内层少两个闭合 } 时自动修复并采纳', () => {
@@ -140,7 +140,7 @@ describe('extract / extractLine', () => {
     const result = extractLine(bad);
 
     assert.equal(result.messages.length, 1);
-    assert.match(result.warnings[0] ?? '', /补上 `}}`/);
+    assert.match(result.warnings[0]?.message ?? '', /补上 `}}`/);
   });
 
   it('最后一个组件少 } 且报错是「属性值后期望 , 或 }」时也修得好', () => {
@@ -151,7 +151,7 @@ describe('extract / extractLine', () => {
     const result = extractLine(bad);
 
     assert.equal(result.messages.length, 1);
-    assert.doesNotMatch(result.warnings[0] ?? '', /JSON 解析失败/);
+    assert.doesNotMatch(result.warnings[0]?.message ?? '', /JSON 解析失败/);
   });
 
   it('连写错两处（组件收尾多 } 且数组 ] 错位）时按括号结构修补', () => {
@@ -163,7 +163,7 @@ describe('extract / extractLine', () => {
     const result = extractLine(bad);
 
     assert.equal(result.messages.length, 1);
-    assert.match(result.warnings[0] ?? '', /多处括号错位/);
+    assert.match(result.warnings[0]?.message ?? '', /多处括号错位/);
   });
 
   it('报文被截断（字符串未闭合）时不硬修', () => {
@@ -171,7 +171,7 @@ describe('extract / extractLine', () => {
     const result = extractLine('{"surfaceUpdate":{"surfaceId":"sf","components":[{"id":"a","comp');
 
     assert.equal(result.messages.length, 0);
-    assert.match(result.warnings[0], /JSON 解析失败/);
+    assert.match(result.warnings[0]?.message ?? '', /JSON 解析失败/);
   });
 
   it('不是括号类错误的坏行（如少逗号）照旧记坏行、不误伤', () => {
@@ -180,13 +180,13 @@ describe('extract / extractLine', () => {
       '{"surfaceUpdate":{"surfaceId":"sf","components":[]}}{"beginRendering":{"surfaceId":"sf","root":"r"}}',
     );
     assert.equal(result.messages.length, 0);
-    assert.match(result.warnings[0], /JSON 解析失败/);
+    assert.match(result.warnings[0]?.message ?? '', /JSON 解析失败/);
   });
 
   it('合法 JSON 但不是协议消息时给出具体原因', () => {
     const result = extractLine('{"foo":1}');
     assert.equal(result.messages.length, 0);
-    assert.match(result.warnings[0], /未知消息类型/);
+    assert.match(result.warnings[0]?.message ?? '', /未知消息类型/);
   });
 });
 
@@ -206,8 +206,8 @@ describe('extract / extractMessages', () => {
     assert.equal(messages.length, 2);
     // 「好的…」那行落在围栏外，被连围栏一起剥掉了；真正失败的只有 `{"beginRendering":` 这一行。
     assert.equal(warnings.length, 1);
-    assert.match(warnings[0], /第 2 行/);
-    assert.match(warnings[0], /JSON 解析失败/);
+    assert.match(warnings[0]?.message ?? '', /第 2 行/);
+    assert.match(warnings[0]?.message ?? '', /JSON 解析失败/);
   });
 
   it('围栏外的中文说明行落进 warning（不影响后续消息）', () => {
@@ -221,7 +221,7 @@ describe('extract / extractMessages', () => {
 
     assert.equal(messages.length, 2);
     assert.equal(warnings.length, 1);
-    assert.match(warnings[0], /第 1 行/);
+    assert.match(warnings[0]?.message ?? '', /第 1 行/);
   });
 
   it('逐行全失败时回退到「整段当一个 JSON 解析」（兜漂亮打印的多行）', () => {
@@ -262,5 +262,32 @@ describe('extract / createLineAssembler', () => {
   it('CRLF 也算行边界', () => {
     const assembler = createLineAssembler();
     assert.deepEqual(assembler.push('a\r\nb\r\n'), ['a', 'b']);
+  });
+});
+
+describe('extract / warning 分级（recovered vs dropped）', () => {
+  const good =
+    '{"surfaceUpdate":{"surfaceId":"sf","components":[{"id":"a","component":{"Text":{"text":{"literalString":"hi"}}}}]}}';
+
+  it('修好了的标 recovered —— 内容可用，只是模型在这里翻过车', () => {
+    const result = extractMessages(good.replace(']}}', '}]}}'));
+
+    assert.equal(result.messages.length, 1);
+    assert.equal(result.warnings[0]?.kind, 'recovered');
+  });
+
+  it('真丢行的标 dropped —— 这段内容没有了', () => {
+    const result = extractMessages('{"beginRendering":');
+
+    assert.equal(result.messages.length, 0);
+    assert.equal(result.warnings[0]?.kind, 'dropped');
+  });
+
+  it('行号前缀不影响严重度', () => {
+    const result = extractMessages(['好的一句说明', good].join('\n'));
+
+    assert.equal(result.messages.length, 1);
+    assert.match(result.warnings[0]?.message ?? '', /第 1 行/);
+    assert.equal(result.warnings[0]?.kind, 'dropped');
   });
 });

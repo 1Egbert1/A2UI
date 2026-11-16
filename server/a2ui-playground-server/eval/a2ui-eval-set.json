@@ -18,7 +18,8 @@
     "sameSurfaceId": "true = 本轮 surfaceId 与上一轮一致（增量轮校验）",
     "rawNotContains": "模型原始输出（TEXT_MESSAGE_CONTENT 拼接）不得包含的串",
     "minRawChars": "模型原始输出最小长度",
-    "noWarnings": "true = 不得出现任何 a2ui.warning（坏行与自动修复都算失败）"
+    "noDropped": "true = 不允许「真丢行」（解析失败 / 字段不合格 / 结构性失败）。自动修复好的（recovered）不算",
+    "strictWarnings": "true = 连「已自动修复」也不允许（只要出现过 warning 就失败）。对抗类用例用它"
   },
   "summary": {
     "total": 26,
@@ -94,7 +95,7 @@
           "欢迎使用 A2UI",
           "由协议驱动的界面"
         ],
-        "noWarnings": true
+        "noDropped": true
       },
       "notes": "最小闭环：只考消息顺序（beginRendering 必须最后一条）与 literalString。"
     },
@@ -123,7 +124,7 @@
           "路线推荐",
           "数据仅供参考"
         ],
-        "noWarnings": true
+        "noDropped": true
       },
       "notes": "考 usageHint 分级（h1/h2/body/caption）。"
     },
@@ -154,7 +155,7 @@
           "搜索",
           "设置"
         ],
-        "noWarnings": true
+        "noDropped": true
       },
       "notes": "考 Row 的 distribution 与 Material 图标名（snake_case 直接命中）。"
     },
@@ -188,7 +189,7 @@
           "通知",
           "隐私"
         ],
-        "noWarnings": true
+        "noDropped": true
       },
       "notes": "考 Divider 两个方向与 Row 组合。"
     },
@@ -225,7 +226,7 @@
         "actionNames": [
           "addToCart"
         ],
-        "noWarnings": true
+        "noDropped": true
       },
       "notes": "考 Card 单子节点、Image 的 fit/usageHint、服务端动作。"
     },
@@ -261,7 +262,7 @@
           "下一集",
           "节目预告"
         ],
-        "noWarnings": true
+        "noDropped": true
       },
       "notes": "考 Video / AudioPlayer 两个媒体组件与 AudioPlayer.description。"
     },
@@ -308,7 +309,7 @@
         "actionNames": [
           "login"
         ],
-        "noWarnings": true
+        "noDropped": true
       },
       "notes": "考表单三件套 + path 绑定 + 服务端动作 context（数组形态 [{key,value}]）+ 数据模型初始化。"
     },
@@ -349,7 +350,7 @@
           "/survey/email",
           "/survey/note"
         ],
-        "noWarnings": true
+        "noDropped": true
       },
       "notes": "考 MultipleChoice 选项结构、TextField 的 longText 与 validationRegexp。"
     },
@@ -383,7 +384,7 @@
         "paths": [
           "/rating/score"
         ],
-        "noWarnings": true
+        "noDropped": true
       },
       "notes": "考 Slider 的 min/max 与数字类型。注意：显示数字的 Text 必须走 path（readString 不认 literalNumber 直插），这正是本题的隐藏考点。"
     },
@@ -425,7 +426,7 @@
         "actionNames": [
           "book"
         ],
-        "noWarnings": true
+        "noDropped": true
       },
       "notes": "考 DateTimeInput 的 enableDate/enableTime 与 Row 双列布局。"
     },
@@ -488,7 +489,7 @@
         "actionNames": [
           "submitOrder"
         ],
-        "noWarnings": true
+        "noDropped": true
       },
       "notes": "综合业务页：模板商品列表 + 对象 map 数据 + chips 单选 + 明细分割线 + 服务端动作。考模板内相对路径与静态/动态文案混排。"
     },
@@ -548,7 +549,7 @@
         "actionNames": [
           "checkout"
         ],
-        "noWarnings": true
+        "noDropped": true
       },
       "notes": "综合业务页：Tabs 分类 + 三个独立模板列表 + 本地动作写状态 + 底部结算栏。本地动作只能写固定值（协议无取反/累加），所以「加入」设计为写状态文案。"
     },
@@ -606,7 +607,7 @@
         "actionNames": [
           "bookRoom"
         ],
-        "noWarnings": true
+        "noDropped": true
       },
       "notes": "综合业务页：头图 + 设施图标行 + 纯日期选择 + 房型模板列表 + 动作回传日期路径。"
     },
@@ -671,7 +672,7 @@
         "actionNames": [
           "createTask"
         ],
-        "noWarnings": true
+        "noDropped": true
       },
       "notes": "综合业务页：三列看板 + 三个模板列表 + Modal 弹层表单。考 Modal 的 entryPointChild/contentChild 与被引用组件必须在同一轮定义。"
     },
@@ -733,7 +734,7 @@
         "actionNames": [
           "play"
         ],
-        "noWarnings": true
+        "noDropped": true
       },
       "notes": "综合业务页：播放卡 + 进度滑块 + 成对的本地动作按钮（协议无取反，用两个按钮分别写 true/false）+ 播放列表模板。"
     },
@@ -787,7 +788,7 @@
         "actionNames": [
           "shareReport"
         ],
-        "noWarnings": true
+        "noDropped": true
       },
       "notes": "综合业务页：指标卡行 + valueNumber 数字类型 + 记录模板列表 + 趋势占位图。三个指标值**不写成文本断言** —— 用例本身要求用 valueNumber 存 8432/356/7.5，渲染出来是「8432」+ 旁边单独的「步」，不可能出现「8,432 步」这种带千分位又带单位的整串（曾经这么写，导致这条用例永远失败）。数值是否落地由 paths 断言保证。"
     },
@@ -849,7 +850,7 @@
         "actionNames": [
           "switchWeek"
         ],
-        "noWarnings": true
+        "noDropped": true
       },
       "notes": "综合业务页：五个页签 + 五个模板列表 + 空数据分支（协议无条件渲染，空状态用静态 Text 表达）+ 复选框设置。"
     },
@@ -911,7 +912,7 @@
           "sendReply",
           "submitRating"
         ],
-        "noWarnings": true
+        "noDropped": true
       },
       "notes": "综合业务页：工单卡 + 消息模板列表 + 长文本回复 + 评分滑块 + 本地动作改状态。"
     },
@@ -969,7 +970,7 @@
           "/home/targetTemp"
         ],
         "localAction": true,
-        "noWarnings": true
+        "noDropped": true
       },
       "notes": "综合业务页：核心考点是一个本地动作里**多个 updateDataModel 操作**（场景模式批量置值），加 valueBoolean 布尔类型与 Tabs + 多模板列表组合。"
     },
@@ -1042,7 +1043,7 @@
           "applyFilter",
           "arrangeInterview"
         ],
-        "noWarnings": true
+        "noDropped": true
       },
       "notes": "综合业务页：筛选表单 + 统计卡 + 候选人模板列表 + 空状态。字段最多的一条，考数据模型组织能力。"
     },
@@ -1073,7 +1074,7 @@
           "系统更新公告",
           "我们将于今晚 02:00 进行升级"
         ],
-        "noWarnings": true
+        "noDropped": true
       },
       "notes": "考四种消息里最少用到的 deleteSurface，以及「beginRendering 不必总是最后一条」的边界（有 deleteSurface 时它在后）。"
     },
@@ -1108,7 +1109,7 @@
             "texts": [
               "关于 A2UI"
             ],
-            "noWarnings": true
+            "noDropped": true
           },
           "notes": "增量轮只发受影响的 surfaceUpdate：不重发 beginRendering、surfaceId 与上一轮一致、不重绘未变组件。"
         }
@@ -1148,7 +1149,7 @@
           "Button",
           "Text"
         ],
-        "noWarnings": true
+        "noDropped": true
       },
       "notes": "多模态用例：图片以 image_url 分片进 user 消息。断言只查结构，文案以图片为准不写死。"
     },
@@ -1177,7 +1178,7 @@
         "rawNotContains": [
           "```"
         ],
-        "noWarnings": true
+        "strictWarnings": true
       },
       "notes": "对抗用例：用户明确要求围栏与解释，模型仍必须只输出纯 JSONL（系统提示的输出格式规约优先于用户指令）。"
     },
@@ -1208,7 +1209,7 @@
           "/likes/count"
         ],
         "localAction": true,
-        "noWarnings": true
+        "noDropped": true
       },
       "notes": "本地动作单元用例：协议只有「写固定值」，所以 +1/清零用两个按钮分别写 1 和 0（考察模型不臆造取反操作）。"
     },
@@ -1248,7 +1249,7 @@
           "/news/item/source"
         ],
         "minRawChars": 2000,
-        "noWarnings": true
+        "noDropped": true
       },
       "notes": "压力用例：长 dataModelUpdate 考流式长行装配与括号配对稳定性（模型在多条目 valueMap 上出过坏行，容错修复会记 warning，本题要求零告警）。"
     }

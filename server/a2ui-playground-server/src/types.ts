@@ -252,6 +252,23 @@ export interface ToolExecutor {
 }
 
 /** 流式路径上 agent 吐出的单个片段：文字增量、思考增量、坏行告警，或一条已抽好的协议消息。 */
+/**
+ * 警告的严重度。
+ *
+ * - `recovered`：模型写错了，但 `recoverJson` 修好了，**内容可用**（页面上看不出问题）。
+ * - `dropped`：内容真的丢了（整行解析失败 / 字段不合格）或结构性失败（漏了 beginRendering）。
+ *
+ * 分这两级是因为它们对人的意义完全不同：前者是「模型偶尔手滑，我们兜住了」，
+ * 后者是「这一块界面没了」。评测集据此判定，而不是一刀切把两种情况都算失败。
+ */
+export type WarningKind = 'recovered' | 'dropped';
+
+/** 一条警告：文案 + 严重度。 */
+export interface AgentWarning {
+  message: string;
+  kind: WarningKind;
+}
+
 export interface AgentStreamChunk {
   /** 模型原始文本增量（**不含思考内容**）。 */
   delta?: string;
@@ -265,5 +282,7 @@ export interface AgentStreamChunk {
    * 客户端却显示「已生成界面 · 2 条协议消息」，预览一片空白，看起来像渲染坏了。
    */
   warning?: string;
+  /** 上面那条 warning 的严重度；缺省按 `dropped` 处理（宁可报严）。 */
+  warningKind?: WarningKind;
   message?: A2UIMessage;
 }

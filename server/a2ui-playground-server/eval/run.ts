@@ -37,7 +37,8 @@ interface EvalCase {
 
 interface Turn {
   messages: Json[];
-  warnings: string[];
+  /** 本轮所有 warning，带严重度（`recovered` = 修好了，`dropped` = 内容没了）。 */
+  warnings: Array<{ message: string; kind: string }>;
   raw: string;
   surfaceId: string;
   error: string;
@@ -51,6 +52,15 @@ const TIMEOUT_MS = Number(process.env.EVAL_TIMEOUT_MS ?? 240_000);
 const args = process.argv.slice(2);
 const onlyArg = args.find((item, index) => args[index - 1] === '--only');
 const only = onlyArg === undefined ? undefined : new Set(onlyArg.split(',').map((s) => s.trim()));
+
+/**
+ * 每条用例跑几次（`--repeat N`，默认 1，上限 5）。
+ *
+ * 模型输出有抖动：同一份代码两轮全量评测，失败集合完全不同。单次结果分不清「实现坏了」
+ * 和「模型手滑」，所以就地把重复次数做成参数，而不是让看报告的人自己去猜。
+ */
+const repeatArg = args.find((item, index) => args[index - 1] === '--repeat');
+const repeat = Math.min(Math.max(Number(repeatArg ?? 1) || 1, 1), 5);
 
 const loadCases = (): EvalCase[] => {
   const file = path.resolve(process.cwd(), 'eval/a2ui-eval-set.json');
@@ -75,7 +85,11 @@ const handleFrame = (frame: string, turn: Turn): void => {
     if (event.name === 'a2ui.message') {
       turn.messages.push(event.value as Json);
     } else if (event.name === 'a2ui.warning') {
-      turn.warnings.push(String((event.value as Json)?.message ?? ''));
+      turn.warnings.push({
+        message: String((event.value as Json)?.message ?? ''),
+        // 老版本没有 kind：按最严的 `dropped` 处理，宁可报严也不要漏掉。
+        kind: String((event.value as Json)?.kind ?? 'dropped'),
+      });
     } else if (event.name === 'a2ui.surface') {
       turn.surfaceId = String((event.value as Json)?.surfaceId ?? '');
     }
@@ -306,8 +320,18 @@ const judge = (
     failures.push(`原始输出只有 ${turn.raw.length} 字符（至少 ${assert.minRawChars}）`);
   }
 
-  if (assert.noWarnings === true && turn.warnings.length > 0) {
-    failures.push(`${turn.warnings.length} 条 warning：${turn.warnings[0]}`);
+  if (assert.strictWarnings === true || assert.noWarnings === true) {
+    // `noWarnings` 是旧名，语义等同 strict：只要出现过 warning 就失败。
+    if (turn.warnings.length > 0) {
+      failures.push(`${turn.warnings.length} 条 warning：${turn.warnings[0]?.message ?? ''}`);
+    }
+  } else if (assert.noDropped === true) {
+    // 只卡「真丢行」：`recoverJson` 修好的（recovered）不算 —— 页面是正常的，
+    // 把它算失败会让每一条复杂用例都随机翻红（实测约 10% 的复杂页会偶发多写一个 `}`）。
+    const dropped = turn.warnings.filter((warning) => warning.kind !== 'recovered');
+    if (dropped.length > 0) {
+      failures.push(`${dropped.length} 条内容被丢弃：${dropped[0]?.message ?? ''}`);
+    }
   }
 
   return failures;
@@ -318,12 +342,16 @@ const judge = (
 interface CaseResult {
   id: string;
   name: string;
-  status: 'pass' | 'fail' | 'skip';
+  status: 'pass' | 'fail' | 'flaky' | 'skip';
   failures: string[];
   turns: Turn[];
   dropped: string[];
   badLineHeight?: number;
   elapsedMs: number;
+  /** 跑了几次（`--repeat`）。1 表示单次。 */
+  attempts: number;
+  /** 其中通过了几次。 */
+  passedAttempts: number;
   note?: string;
 }
 
@@ -336,6 +364,8 @@ const runCase = async (testCase: EvalCase): Promise<CaseResult> => {
       failures: [],
       turns: [],
       dropped: [],
+      attempts: 1,
+      passedAttempts: 0,
       elapsedMs: 0,
       note: '需要附图（runner 暂不提供图片）',
     };
@@ -370,7 +400,48 @@ const runCase = async (testCase: EvalCase): Promise<CaseResult> => {
     turns,
     dropped: style.dropped,
     badLineHeight: style.badLineHeight,
+    attempts: 1,
+    passedAttempts: failures.length === 0 ? 1 : 0,
     elapsedMs: Date.now() - startedAt,
+  };
+};
+
+/**
+ * 跑 N 次并聚合。
+ *
+ * 为什么要重复：模型输出有抖动。两轮全量评测里，失败集合完全不同（一次是 T07+T16，
+ * 一次是 T11+T14），单次结果不足以判断是「用例/实现坏了」还是「模型手滑了」。
+ *
+ * 判定口径：
+ * - 全部通过 → `pass`
+ * - 全部失败 → `fail`（稳定缺陷）
+ * - 有通过有失败 → `flaky`（抖动，**不算构建失败**，但要明确报出来）
+ */
+const runCaseRepeated = async (testCase: EvalCase, repeat: number): Promise<CaseResult> => {
+  const attempts: CaseResult[] = [];
+  for (let index = 0; index < repeat; index += 1) {
+    attempts.push(await runCase(testCase));
+  }
+
+  const first = attempts[0] as CaseResult;
+  if (first.status === 'skip') {
+    return first;
+  }
+
+  const passed = attempts.filter((item) => item.status === 'pass').length;
+  const representative = attempts.find((item) => item.status === 'fail') ?? first;
+  const status: CaseResult['status'] =
+    passed === attempts.length ? 'pass' : passed === 0 ? 'fail' : 'flaky';
+
+  return {
+    ...representative,
+    status,
+    // 失败明细取「第一次失败」的：同一用例的失败原因通常一样，
+    // 混在一起列会变成一屏重复文本。
+    failures: representative.failures,
+    attempts: attempts.length,
+    passedAttempts: passed,
+    elapsedMs: attempts.reduce((sum, item) => sum + item.elapsedMs, 0),
   };
 };
 
@@ -383,11 +454,14 @@ const main = async (): Promise<void> => {
     process.exit(1);
   }
 
-  console.log(`评测 ${cases.length} 条 · 目标 ${BASE} · 单轮超时 ${formatSeconds(TIMEOUT_MS)}\n`);
+  console.log(
+    `评测 ${cases.length} 条 · 目标 ${BASE} · 单轮超时 ${formatSeconds(TIMEOUT_MS)}` +
+      `${repeat > 1 ? ` · 每条跑 ${repeat} 次` : ''}\n`,
+  );
 
   const results: CaseResult[] = [];
   for (const testCase of cases) {
-    const result = await runCase(testCase);
+    const result = await runCaseRepeated(testCase, repeat);
     results.push(result);
 
     const messages = result.turns.reduce((sum, turn) => sum + turn.messages.length, 0);
@@ -395,10 +469,18 @@ const main = async (): Promise<void> => {
       (sum, turn) => sum + componentsOf(turn.messages).length,
       0,
     );
-    const mark = result.status === 'pass' ? '✅' : result.status === 'skip' ? '⏭' : '❌';
+    const mark =
+      result.status === 'pass'
+        ? '✅'
+        : result.status === 'flaky'
+          ? '⚠️'
+          : result.status === 'skip'
+            ? '⏭'
+            : '❌';
+    const ratio = result.attempts > 1 ? ` ${result.passedAttempts}/${result.attempts} 次` : '';
     // 一行一条：进度只在**完成时**打印。用 `\r` 回写会让重定向到文件时留下一堆半行。
     console.log(
-      `${mark} ${result.id}  ${formatSeconds(result.elapsedMs).padStart(6)}  ` +
+      `${mark} ${result.id}${ratio}  ${formatSeconds(result.elapsedMs).padStart(6)}  ` +
         `${String(messages).padStart(3)} 条消息 · ${String(components).padStart(3)} 组件 · ` +
         `${String(result.dropped.length).padStart(2)} 丢键   ${result.name}`,
     );
@@ -415,6 +497,7 @@ const main = async (): Promise<void> => {
 
   const passed = results.filter((item) => item.status === 'pass').length;
   const failed = results.filter((item) => item.status === 'fail').length;
+  const flaky = results.filter((item) => item.status === 'flaky').length;
   const skipped = results.filter((item) => item.status === 'skip').length;
   const scored = results.filter((item) => item.status !== 'skip');
 
@@ -431,7 +514,18 @@ const main = async (): Promise<void> => {
   const elapsed = scored.reduce((sum, item) => sum + item.elapsedMs, 0);
 
   console.log(`\n${'─'.repeat(64)}`);
-  console.log(`通过 ${passed} / 失败 ${failed} / 跳过 ${skipped} · 总耗时 ${(elapsed / 60000).toFixed(1)} 分钟`);
+  console.log(
+    `通过 ${passed} / 抖动 ${flaky} / 失败 ${failed} / 跳过 ${skipped} · ` +
+      `总耗时 ${(elapsed / 60000).toFixed(1)} 分钟`,
+  );
+  if (flaky > 0) {
+    console.log(
+      `  抖动（有通过有失败，不影响退出码）：${results
+        .filter((item) => item.status === 'flaky')
+        .map((item) => `${item.id} ${item.passedAttempts}/${item.attempts}`)
+        .join('、')}`,
+    );
+  }
 
   if (withDropped.length > 0) {
     console.log(

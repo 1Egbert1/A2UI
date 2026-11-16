@@ -20,11 +20,14 @@ pnpm --filter a2ui-playground-server run eval
 
 # 只跑某几条（调试 runner 本身时用）
 pnpm --filter a2ui-playground-server run eval -- --only T01,T22
+
+# 每条跑 2 次，把「抖动」和「稳定失败」分开（耗时翻倍）
+pnpm --filter a2ui-playground-server run eval -- --repeat 2
 ```
 
 输出每条的「耗时 / 消息条数 / 组件数 / 被丢弃的样式键」，末尾给通过率与丢键统计。
-失败**返回退出码 1**，可直接接 CI。环境变量：`EVAL_BASE`（默认 `http://127.0.0.1:3000`）、
-`EVAL_TIMEOUT_MS`（单轮超时，默认 240s）。
+**抖动**（有通过有失败）单独计数，不影响退出码；**失败**（每次都挂）才返回 1，可直接接 CI。
+环境变量：`EVAL_BASE`（默认 `http://127.0.0.1:3000`）、`EVAL_TIMEOUT_MS`（单轮超时，默认 240s）。
 
 runner 在 [`run.ts`](./run.ts)：它按下面的规则打接口、收事件、逐字段判定。
 需要附图的用例（T23）目前**跳过**并标 `⏭` —— runner 还没有提供图片的入口。
@@ -76,7 +79,13 @@ curl -sN -X POST http://127.0.0.1:3000/api/a2ui/run \
 | `sameSurfaceId` | `true` = 本轮 surfaceId 与上一轮一致（增量轮） |
 | `rawNotContains` | 模型原始输出不得包含的串（如 ` ``` ` ） |
 | `minRawChars` | 模型原始输出最小长度 |
-| `noWarnings` | `true` = 零 `a2ui.warning`（坏行与自动修复都算失败） |
+| `noDropped` | `true` = 不允许**真丢行**（解析失败 / 字段不合格 / 结构性失败）。`recoverJson` 修好的（`recovered`）**不算** |
+| `strictWarnings` | `true` = 连「已自动修复」也不允许（只要出现过 `a2ui.warning` 就失败）。对抗类用例用 |
+
+> 为什么分两级：warning 现在带 `kind`。
+> `recovered` = 模型写错了但修好了（页面正常，实测约 10% 的复杂页会偶发多写一个 `}`）；
+> `dropped` = 这块内容真没了。功能用例卡后者，纪律用例（T24）才卡前者 ——
+> 否则每一条复杂用例都会随机翻红，评测集就没法当门禁用了。
 
 ## 三、覆盖矩阵
 

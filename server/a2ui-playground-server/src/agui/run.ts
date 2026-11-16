@@ -99,7 +99,12 @@ export async function* runA2UIStream(options: A2UIRunOptions): AsyncGenerator<Ag
       }
 
       if (chunk.warning) {
-        yield event.custom(A2UI_CUSTOM_EVENT.warning, { message: chunk.warning });
+        // 带上严重度：`recovered` = 修好了（页面正常），`dropped` = 这块内容真没了。
+        // 客户端与评测集都按它区分，别把「修好了」和「丢了」算成同一件事。
+        yield event.custom(A2UI_CUSTOM_EVENT.warning, {
+          message: chunk.warning,
+          kind: chunk.warningKind ?? 'dropped',
+        });
       }
 
       if (chunk.delta) {
@@ -153,7 +158,8 @@ export async function* runA2UIStream(options: A2UIRunOptions): AsyncGenerator<Ag
    * 而不是对着空白画布猜。
    */
   for (const warning of protocolWarnings(messages, { isFirstTurn: request.history.length === 0 })) {
-    yield event.custom(A2UI_CUSTOM_EVENT.warning, { message: warning });
+    // 结构性失败（画不出来）算 `dropped`：它不是「修好了」，是这一轮没有界面。
+    yield event.custom(A2UI_CUSTOM_EVENT.warning, { message: warning, kind: 'dropped' });
   }
 
   const result: RunSummary = {

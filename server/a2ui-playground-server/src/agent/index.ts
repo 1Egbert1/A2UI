@@ -68,7 +68,7 @@ export const assembleStream = async function* (
       // 坏行**不中断这一轮**，但要如实上报。静默丢掉是更坏的选择：模型把括号写错时，
       // 整棵组件树会消失而客户端毫不知情 —— 界面上只看到一片空白。
       for (const warning of warnings) {
-        yield { warning };
+        yield { warning: warning.message, warningKind: warning.kind };
       }
       for (const message of messages) {
         yield { message };
@@ -123,8 +123,15 @@ export const createA2UIAgent = (config: ServerConfig): A2UIAgent => {
       const chosen = pick(request);
       const raw = await chosen.complete(request);
       const { messages, warnings } = extractMessages(raw);
-      // provider 报的是**实际用了哪个**：场景请求在 openai 配置下也会如实回 'mock'。
-      return { messages, raw, provider: chosen.name, warnings };
+      // 非流式接口的读者是人和脚本，只要文案：`kind` 是给流式判定（评测集）用的，
+      // 在这里塞进去会改变 `/api/a2ui/generate` 的响应形状，没有必要。
+      return {
+        messages,
+        raw,
+        // provider 报的是**实际用了哪个**：场景请求在 openai 配置下也会如实回 'mock'。
+        provider: chosen.name,
+        warnings: warnings.map((warning) => warning.message),
+      };
     },
 
     stream(request: AgentRequest): AsyncGenerator<AgentStreamChunk> {

@@ -10,6 +10,7 @@
  * 设计原则：**抽取永不抛错**。坏行进 `warnings`，调用方照常拿到能用的部分；
  * 真出问题（一条消息都没抽出来）由上层决定怎么回。
  */
+import type { AgentWarning, WarningKind } from '../types';
 import { MESSAGE_KEYS, type A2UIMessage, type MessageKey } from './keys';
 
 export { MESSAGE_KEYS };
@@ -17,9 +18,18 @@ export type { MessageKey };
 
 export interface ExtractResult {
   messages: A2UIMessage[];
-  /** 被丢弃的内容及原因，形如 `第 3 行: JSON 解析失败 — Unexpected token }`。 */
-  warnings: string[];
+  /**
+   * 抽取过程中出的问题。每条带 `kind`：
+   * - `recovered`：修好了，消息照常采纳（页面正常，但模型这里翻过车）；
+   * - `dropped`：这段内容没了（整行解析失败 / 字段不合格）。
+   *
+   * 形如 `{ message: '第 3 行: JSON 解析失败 — Unexpected token }', kind: 'dropped' }`。
+   */
+  warnings: AgentWarning[];
 }
+
+/** 造一条警告。文案是给人看的，`kind` 是给判定用的。 */
+const warn = (message: string, kind: WarningKind): AgentWarning => ({ message, kind });
 
 type LineCheck = { ok: true; message: A2UIMessage } | { ok: false; reason: string };
 
@@ -378,7 +388,7 @@ const recoverJson = (text: string, error: string): { value: unknown; note: strin
 /**
  * 抽取一行文本里的消息。一行里若是一个数组，按元素逐个校验（展开为多条）。
  */
-export const extractLine = (line: string): { messages: A2UIMessage[]; warnings: string[] } => {
+export const extractLine = (line: string): { messages: A2UIMessage[]; warnings: AgentWarning[] } => {
   const trimmed = line.trim();
   if (trimmed === '') {
     return { messages: [], warnings: [] };
@@ -392,7 +402,7 @@ export const extractLine = (line: string): { messages: A2UIMessage[]; warnings: 
     const reason = error instanceof Error ? error.message : String(error);
     const fixed = recoverJson(trimmed, reason);
     if (fixed === null) {
-      return { messages: [], warnings: [`JSON 解析失败 — ${reason}`] };
+      return { messages: [], warnings: [warn(`JSON 解析失败 — ${reason}`, 'dropped')] };
     }
     parsed = fixed.value;
     recoveryNote = fixed.note;
@@ -400,10 +410,10 @@ export const extractLine = (line: string): { messages: A2UIMessage[]; warnings: 
 
   const candidates = Array.isArray(parsed) ? parsed : [parsed];
   const messages: A2UIMessage[] = [];
-  const warnings: string[] = [];
+  const warnings: AgentWarning[] = [];
   if (recoveryNote !== '') {
     // 修好了就别当「坏行」丢：消息照常采纳，但留一句提示让调用方知道模型这里翻过车。
-    warnings.push(recoveryNote);
+    warnings.push(warn(recoveryNote, 'recovered'));
   }
 
   for (const candidate of candidates) {
@@ -411,7 +421,7 @@ export const extractLine = (line: string): { messages: A2UIMessage[]; warnings: 
     if (check.ok) {
       messages.push(check.message);
     } else {
-      warnings.push(check.reason);
+      warnings.push(warn(check.reason, 'dropped'));
     }
   }
 
@@ -426,13 +436,14 @@ export const extractLine = (line: string): { messages: A2UIMessage[]; warnings: 
 export const extractMessages = (text: string): ExtractResult => {
   const body = stripCodeFences(text);
   const messages: A2UIMessage[] = [];
-  const warnings: string[] = [];
+  const warnings: AgentWarning[] = [];
 
   body.split(/\r?\n/).forEach((line, index) => {
     const result = extractLine(line);
     messages.push(...result.messages);
     for (const warning of result.warnings) {
-      warnings.push(`第 ${index + 1} 行: ${warning}`);
+      // 行号加在文案前面（定位价值），严重度原样带过去。
+      warnings.push({ message: `第 ${index + 1} 行: ${warning.message}`, kind: warning.kind });
     }
   });
 
@@ -453,7 +464,7 @@ export const extractMessages = (text: string): ExtractResult => {
       if (check.ok) {
         messages.push(check.message);
       } else {
-        warnings.push(check.reason);
+        warnings.push(warn(check.reason, 'dropped'));
       }
     }
   } catch {
