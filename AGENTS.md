@@ -27,6 +27,11 @@ Node ≥ 22，pnpm 12.10.1。
 起服务：`pnpm --filter a2ui-playground-server dev`（3000，默认 `AGENT_PROVIDER=mock` 离线可跑）、
 `pnpm --filter a2ui-playground dev`（playground）。
 
+改了 **prompt / 抽取器 / 渲染器**之后，除了单测还要跑评测集（真实模型，6~10 分钟）：
+`pnpm --filter a2ui-playground-server run eval`（服务要先起着）。
+它跑 26 条用例并打印「通过率 / 每页被丢弃的样式键 / 耗时」；失败退出码 1。
+单条调试：`... run eval -- --only T07`。注意模型输出有抖动，**单次失败先复跑那条**再当缺陷。
+
 ## 3. 单点真相（改之前先看这一处，别复制粘贴）
 
 | 事实 | 唯一来源 |

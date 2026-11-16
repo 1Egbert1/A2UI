@@ -9,7 +9,27 @@
 
 ## 一、怎么跑
 
-被测接口：`POST /api/a2ui/run`（`server/a2ui-playground-server`，默认 3000 端口）。
+**一键跑全量（推荐）**：
+
+```bash
+# 先把服务起起来（真实模型或 mock 都行，runner 只认 HTTP）
+pnpm --filter a2ui-playground-server dev
+
+# 另一个终端：跑全部 26 条
+pnpm --filter a2ui-playground-server run eval
+
+# 只跑某几条（调试 runner 本身时用）
+pnpm --filter a2ui-playground-server run eval -- --only T01,T22
+```
+
+输出每条的「耗时 / 消息条数 / 组件数 / 被丢弃的样式键」，末尾给通过率与丢键统计。
+失败**返回退出码 1**，可直接接 CI。环境变量：`EVAL_BASE`（默认 `http://127.0.0.1:3000`）、
+`EVAL_TIMEOUT_MS`（单轮超时，默认 240s）。
+
+runner 在 [`run.ts`](./run.ts)：它按下面的规则打接口、收事件、逐字段判定。
+需要附图的用例（T23）目前**跳过**并标 `⏭` —— runner 还没有提供图片的入口。
+
+**手工跑单条**（排查某一条时更直观）：被测接口是 `POST /api/a2ui/run`（默认 3000 端口）。
 
 ```bash
 # 单条（流式 SSE，收集 data: 帧）

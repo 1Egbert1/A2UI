@@ -10,7 +10,8 @@
     "icons-mcp": "ts-node src/bin/icons-mcp.ts",
     "build": "tsc",
     "test": "mocha",
-    "test:types": "tsc -p tsconfig.test.json"
+    "test:types": "tsc -p tsconfig.test.json",
+    "eval": "tsx eval/run.ts"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",
