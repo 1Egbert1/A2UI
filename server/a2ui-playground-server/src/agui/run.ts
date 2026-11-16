@@ -25,6 +25,7 @@
  */
 import type { A2UIAgent } from '../agent';
 import type { AgentProvider, AgentRequest, A2UIMessage, ModelDelta } from '../types';
+import { protocolWarnings } from './audit';
 import {
   A2UI_CUSTOM_EVENT,
   MODEL_CUSTOM_EVENT,
@@ -142,6 +143,17 @@ export async function* runA2UIStream(options: A2UIRunOptions): AsyncGenerator<Ag
       'EMPTY_OUTPUT',
     );
     return;
+  }
+
+  /**
+   * 收尾体检：消息全合法、但这一轮画不出东西（典型是漏了 beginRendering）。
+   *
+   * 放在 RUN_FINISHED 之前 —— 客户端把 warning 与 message 记在同一轮的气泡上，
+   * 用户看到「已生成界面 · N 条协议消息」的同时也能看到「界面不会显示」，
+   * 而不是对着空白画布猜。
+   */
+  for (const warning of protocolWarnings(messages, { isFirstTurn: request.history.length === 0 })) {
+    yield event.custom(A2UI_CUSTOM_EVENT.warning, { message: warning });
   }
 
   const result: RunSummary = {

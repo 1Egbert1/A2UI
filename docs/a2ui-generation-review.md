@@ -83,11 +83,19 @@ CSS 的 `line-height` 无单位数字表示**字号的倍数**。实测（字号
 
 校验结果：**悬空引用 0、孤儿 0、12 条 path 绑定全部能被数据模型解析**。
 
-## 6. 两条可以机检的判据（建议加进生成侧）
+## 6. 两条可以机检的判据（已实现）
 
-| 判据 | 触发条件 | 提示 |
-| --- | --- | --- |
-| 无 surface | 本轮有 `surfaceUpdate`、但没有 `beginRendering` | 「收到了 N 个组件但从未创建 surface，预览不会显示」 |
-| 行高可疑 | `lineHeight` 是数字且 ≥ 4 | 「`lineHeight: 20` 是 20 倍行高；像素值请写 `"20px"`」 |
+| 判据 | 触发条件 | 提示 | 实现位置 |
+| --- | --- | --- | --- |
+| 无 surface | **首轮**有 `surfaceUpdate`、但没有 `beginRendering` | 「收到了 N 个组件但从未创建 surface，预览不会显示」 | `agui/audit.ts` 的 `protocolWarnings` |
+| root 指不到 | 首轮 `beginRendering.root` 不在本轮组件里 | 「root「x」不在本轮组件里，界面会空白」 | 同上 |
+| 行高可疑 | `lineHeight` 是数字且 ≥ 4 | 「`lineHeight: 20` 是 20 倍行高；像素值请写 `"20px"`」 | `a2ui-vue` 的 `auditStyles`，playground 收尾时汇总 |
+| 样式键被丢 | `styles` 里有白名单外的键 | 「样式键不在白名单、已被忽略（N 个）：…」 | 同上 |
 
-两条都只需要遍历已落地的消息 / 组件，不必改解析器。第一条能把「静默空白」变成可解释的失败。
+两类判据刻意分层：**协议层在服务端**（任何客户端都该受益），**样式层在渲染端**
+（白名单只存在那一处，复制到服务端就会有两处要同步）。都只出提示、不改行为。
+
+对应 prompt 的两条补充（`prompt-template.ts` 与 `docs/a2ui-agent-prompt.md` §2 逐字同步）：
+
+- `lineHeight`：倍数写数字、像素写字符串；
+- 没有方向性边框，单边线用 `boxShadow: inset`。

@@ -188,3 +188,83 @@ describe('agui / runA2UIStream 失败路径', () => {
     assert.equal(types.at(-1), 'RUN_FINISHED');
   });
 });
+
+describe('agui / 协议体检（画不出来但没有错误）', () => {
+  /** 只吐指定消息的假 agent：用来看「整轮全貌」上的判据。 */
+  const messageAgent = (messages: A2UIMessage[]): A2UIAgent =>
+    scriptedAgent('mock', async function* () {
+      for (const message of messages) {
+        yield { message };
+      }
+    });
+
+  const warningsOf = (events: AgUiEvent[]): string[] =>
+    events
+      .filter(
+        (event): event is Extract<AgUiEvent, { type: 'CUSTOM' }> =>
+          event.type === 'CUSTOM' && event.name === A2UI_CUSTOM_EVENT.warning,
+      )
+      .map((event) => String((event.value as { message?: unknown }).message ?? ''));
+
+  const componentsOnly: A2UIMessage[] = [
+    {
+      surfaceUpdate: {
+        surfaceId: 'sf-2',
+        components: [
+          { id: 'a', component: { Text: { text: { literalString: 'a' } } } },
+          { id: 'b', component: { Text: { text: { literalString: 'b' } } } },
+        ],
+      },
+    },
+  ];
+
+  it('首轮有组件却没有 beginRendering：出一条 warning（界面不会显示）', async () => {
+    const { events, types } = await collect(messageAgent(componentsOnly), {
+      ...requestOf(),
+      surfaceId: 'sf-2',
+    });
+
+    const warnings = warningsOf(events);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0] as string, /没有 beginRendering/);
+    assert.match(warnings[0] as string, /2 个组件/);
+    // 仍然正常收尾：这不是失败，是「能跑通但画不出来」。
+    assert.equal(types.at(-1), 'RUN_FINISHED');
+    // warning 必须在 RUN_FINISHED 之前，客户端才来得及记到本轮气泡上。
+    assert.ok(events.findIndex((event) => event.type === 'RUN_FINISHED') > 0);
+    assert.equal(types.lastIndexOf('CUSTOM') < types.indexOf('RUN_FINISHED'), true);
+  });
+
+  it('增量轮次（history 非空）不检查 —— 那时本来就不该重发 beginRendering', async () => {
+    const { events } = await collect(messageAgent(componentsOnly), {
+      ...requestOf(),
+      surfaceId: 'sf-2',
+      history: [{ role: 'assistant', content: '上一轮已经建过 surface' }],
+    });
+
+    assert.deepEqual(warningsOf(events), []);
+  });
+
+  it('beginRendering 的 root 不在本轮组件里：出 warning', async () => {
+    const { events } = await collect(
+      messageAgent([
+        ...componentsOnly,
+        { beginRendering: { surfaceId: 'sf-2', root: 'missing-root' } },
+      ]),
+      { ...requestOf(), surfaceId: 'sf-2' },
+    );
+
+    const warnings = warningsOf(events);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0] as string, /root「missing-root」/);
+  });
+
+  it('root 齐备时不出 warning（正常流不该被判成问题）', async () => {
+    const { events } = await collect(
+      messageAgent([...componentsOnly, { beginRendering: { surfaceId: 'sf-2', root: 'a' } }]),
+      { ...requestOf(), surfaceId: 'sf-2' },
+    );
+
+    assert.deepEqual(warningsOf(events), []);
+  });
+});

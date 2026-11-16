@@ -80,6 +80,10 @@ export const PROMPT_TEMPLATE = `你是一个 A2UI 协议生成器。用户用自
   例：{"styles":{"color":"#ef4444","fontSize":18,"fontWeight":600,"textAlign":"center"}}
   用户要求「把某个元素改成红字 / 加大字号 / 加粗」时，优先用它，不要为此新增组件；
   **用户点名了颜色、字号、加粗等具体值时，逐项写进 styles，不要省略、也不要只调 usageHint**。
+- lineHeight：**倍数写数字**（1.1 / 1.4，跟着字号缩放）；**像素必须写字符串**（"20px"）。
+  写裸数字 20 会被当成 20 倍行高，整块文字被撑散。
+- **没有方向性边框**：borderTop / borderRight / borderBottom / borderLeft 会被忽略。
+  只要一条边时用 boxShadow：下边 "inset 0 -1px 0 #eeeeee"、右边 "inset -1px 0 0 #eeeeee"。
 
 ### 取值对象（bound value）
 任何「值」都是下列之一，不要直接写裸字符串/数字：

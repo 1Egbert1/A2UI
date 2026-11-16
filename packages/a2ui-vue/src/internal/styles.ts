@@ -439,3 +439,44 @@ export const stylesOf = (raw: unknown): CSSProperties | undefined => {
 
   return Object.keys(result).length > 0 ? (result as CSSProperties) : undefined;
 };
+
+/** 一次样式体检的结果。 */
+export interface StyleAudit {
+  /** 不在白名单、会被**静默丢弃**的键。 */
+  dropped: string[];
+  /**
+   * 可疑的 `lineHeight`：纯数字且 ≥ 4。
+   *
+   * `lineHeight` 登记为倍数语义（`1.1` = 110% 字号），所以裸数字 20 会被 CSS 当成
+   * 20 倍行高（13px 字号下实测 260px）。≥ 4 的倍数几乎没人写，基本只可能是
+   * 「像素值忘了写单位」。
+   */
+  suspiciousLineHeight?: number;
+}
+
+/**
+ * 体检一个组件的 `styles`：**只报问题，不改行为**。
+ *
+ * 存在的理由：白名单外的键是静默丢弃的（这是刻意的，防止模型乱造 CSS），
+ * 但「静默」意味着模型一直写 `borderBottom` 也没人知道。这个函数把沉默变成可上报的结论，
+ * 由调用方（playground 的诊断面板）决定怎么展示。
+ */
+export const auditStyles = (raw: unknown): StyleAudit => {
+  const audit: StyleAudit = { dropped: [] };
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return audit;
+  }
+
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    const prop = toCamelProp(key);
+    if (STYLE_RULES[prop] === undefined) {
+      audit.dropped.push(prop);
+      continue;
+    }
+    if (prop === 'lineHeight' && typeof value === 'number' && Number.isFinite(value) && value >= 4) {
+      audit.suspiciousLineHeight = value;
+    }
+  }
+
+  return audit;
+};

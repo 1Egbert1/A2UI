@@ -446,7 +446,7 @@
                   class="answer__raw answer__raw--warning"
                   open
                 >
-                  <summary>{{ message.warnings.length }} 条解析提示</summary>
+                  <summary>{{ message.warnings.length }} 条提示</summary>
                   <pre class="answer__warnings">{{ message.warnings.join('\n') }}</pre>
                 </details>
 
@@ -771,7 +771,7 @@ import type { A2UIBuffer, A2UIStoreState, JSONLStream, TreeMap, TreeNode } from 
 // 只留 `deriveStreamOrders` 这个纯函数：示例数据本身现在**全部从服务端取**（见 `loadScenarios`），
 // 而「一份 JSONL 能派生出哪几种推送顺序」是解析层的通用工具，本就该由 SDK 提供。
 import { deriveStreamOrders } from 'a2ui-core/mock';
-import { renderMap } from 'a2ui-vue';
+import { auditStyles, renderMap } from 'a2ui-vue';
 // 全局注册的组件不用引，但 `ElMessage` 是函数式调用，必须显式 import。
 import { ElMessage } from 'element-plus';
 
@@ -1201,7 +1201,11 @@ interface ChatMessage {
    */
   thinking: string;
   /**
-   * 本轮没能解析成协议消息的行（`CUSTOM a2ui.warning`）。
+   * 本轮的问题提示。三个来源：
+   *
+   * - 没能解析成协议消息的行（`CUSTOM a2ui.warning`，服务端发）；
+   * - 协议体检：有组件却没有 beginRendering / root 指不到（同样是 `a2ui.warning`）；
+   * - 样式体检：白名单外的键被丢弃、`lineHeight` 疑似把像素写成了倍数（客户端扫）。
    *
    * 流式路径刻意不为坏行中断（一次坏行不该毁掉整轮），但**必须让它可见**：真出过这事 ——
    * 模型把 `surfaceUpdate` 的括号多写一个，整棵组件树被丢掉，界面却显示「已生成界面 ·
@@ -1385,9 +1389,9 @@ const describeChatMessage = (message: ChatMessage): string => {
       ? `${isScenario ? `已载入示例场景 ${message.scenarioId}` : '已生成界面'} · ${message.messageCount} 条协议消息`
       : '本轮没有产出可渲染的消息',
   ];
-  // 有解析提示（坏行被丢弃 / 或某行被自动修复）就并列显示 —— 只有条数会误导人。
+  // 有提示（坏行被丢弃 / 自动修复 / 样式键被忽略 / 画不出界面）就并列显示 —— 只有条数会误导人。
   if (message.warnings.length > 0) {
-    parts.push(`${message.warnings.length} 条解析提示`);
+    parts.push(`${message.warnings.length} 条提示`);
   }
   if (message.elapsedMs > 0) {
     parts.push(`耗时 ${message.elapsedMs} ms`);
@@ -2513,6 +2517,60 @@ const handleChatEvent = (event: AgUiSseEvent): void => {
 type RunPayload = { message: string } | { scenario: string };
 
 /**
+ * 扫一遍本轮的组件，报出「会被静默丢掉」的样式问题。
+ *
+ * 为什么在客户端做：白名单只存在于渲染层（`a2ui-vue` 的 `STYLE_RULES`），服务端没有这份表；
+ * 复制一份到服务端就会有两处要同步，迟早分叉。所以渲染端的 `auditStyles` 是唯一判据，
+ * 这里只负责把结果汇总成人话。
+ *
+ * 两类问题都是「界面上看不出原因」的那种：
+ * - 白名单外的键被丢弃（模型写了 `borderBottom`，开发者以为有边框）
+ * - `lineHeight` 给了裸数字（被当成倍数，实测 13px 字号下 20 → 260px 行高）
+ */
+const styleWarningsOf = (messages: unknown[]): string[] => {
+  const dropped = new Set<string>();
+  let suspiciousLineHeight: number | undefined;
+
+  for (const message of messages) {
+    const components = (
+      message as {
+        surfaceUpdate?: { components?: Array<{ component?: Record<string, unknown> }> };
+      }
+    ).surfaceUpdate?.components;
+
+    for (const item of components ?? []) {
+      const node = item.component ?? {};
+      const props = Object.values(node)[0] as { styles?: unknown } | undefined;
+      const audit = auditStyles(props?.styles);
+      for (const key of audit.dropped) {
+        dropped.add(key);
+      }
+      if (audit.suspiciousLineHeight !== undefined) {
+        suspiciousLineHeight = audit.suspiciousLineHeight;
+      }
+    }
+  }
+
+  const warnings: string[] = [];
+  if (dropped.size > 0) {
+    // 只列前几个：这是给人看的一句话，不是全量清单（全量在组件树的 protocol 里）。
+    const keys = [...dropped];
+    const shown = keys.slice(0, 5).join('、');
+    warnings.push(
+      keys.length > 5
+        ? `样式键不在白名单、已被忽略（${keys.length} 个）：${shown} 等`
+        : `样式键不在白名单、已被忽略：${shown}`,
+    );
+  }
+  if (suspiciousLineHeight !== undefined) {
+    warnings.push(
+      `lineHeight: ${suspiciousLineHeight} 会被当成 ${suspiciousLineHeight} 倍行高（像素值要写成 "${suspiciousLineHeight}px"）`,
+    );
+  }
+  return warnings;
+};
+
+/**
  * 跑一轮：POST `/api/a2ui/run` 走 **SSE**，边收边渲染。
  *
  * **自由输入与示例场景共用这一条**，差别只在请求体带 `message` 还是 `scenario` ——
@@ -2645,6 +2703,14 @@ const runFromServer = async (payload: RunPayload): Promise<void> => {
       elapsedMs,
     });
     serverElapsed.value = elapsedMs;
+
+    // 样式体检放在收尾：组件全到齐了才扫得准，而且它是「本轮」的结论，
+    // 没必要在流式过程中反复刷新。
+    const styleWarnings = styleWarningsOf(serverResult.value?.messages ?? []);
+    const active = chatMessages.value[activeAgentIndex];
+    if (active !== undefined && styleWarnings.length > 0) {
+      active.warnings = [...active.warnings, ...styleWarnings];
+    }
   };
 
   try {
