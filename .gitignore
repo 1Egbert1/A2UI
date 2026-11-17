@@ -40,3 +40,6 @@ Thumbs.db
 
 # ContextWeave 绘图请求与回执（本地工作目录）
 .cw_skill/
+
+# ACR 巡检历史与本地 wiki（工具私有状态，可再生）
+.acr/
