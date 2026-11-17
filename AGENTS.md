@@ -9,7 +9,7 @@ A2UI：模型输出 **JSONL 协议** → `a2ui-core` 解析并维护状态 → `
 五个工作区：`packages/a2ui-core`（协议引擎，零框架依赖）、`packages/a2ui-vue`（18 个渲染器）、
 `packages/a2ui-ui-components`、`server/a2ui-playground-server`（Koa，产出协议）、`web/a2ui-playground`（Vite + Vue3）。
 
-**协议锁在 v0.8.2**（上游已 closed）。这一点最容易出错，见 §6。
+**协议锁在 v0.8.2**（上游已标 `deprecated`，当前是 v1.0，消息名全换）。这一点最容易出错，见 §6。
 
 Node ≥ 22，pnpm 12.10.1。
 

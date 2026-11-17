@@ -123,6 +123,6 @@ curl -sN -X POST http://127.0.0.1:3000/api/a2ui/run \
 
 ## 五、后续
 
-- 可加一个 runner：遍历 `tests` → 打 `/run` → 按 `assert` 出通过率报表（需要时再实现）。
+- runner 已实现（[`run.ts`](./run.ts)，`pnpm --filter a2ui-playground-server run eval`）；接下来是**接 CI 门禁**与**补图片入口**（T23 现在跳过）。
 - 新增用例请保持：`tags` 只写渲染器真实支持的组件/属性；`texts`/`paths` 断言与 `userPrompt` 明确要求一致；
   改 `summary` 时同步 `byCategory` 与覆盖率声明。

@@ -13,7 +13,7 @@
 | **驱动 UI** | Chrome DevTools for agents（`chrome-devtools-mcp`） | **1.0 稳定**，MCP + CLI + skills，26 个工具 | agent 能像真人一样操作与检查浏览器：点、填、截图、看网络、录性能、跑 Lighthouse |
 | **暴露工具** | WebMCP | **Origin Trial** | 站点不再靠 agent 猜 DOM，而是显式声明工具给 agent 调 |
 | **运行模型** | Chrome 内置 AI（Gemini Nano） | Summarizer / Translator / LanguageDetector **稳定**；Prompt API 扩展侧稳定、网页侧 2026 年内逐步稳定；Writer / Rewriter / Proofreader 仍在开发预览 | 浏览器本身就是模型运行时：免费、离线、数据不出设备 |
-| **发出 UI** | A2UI（Google + AG-UI 生态） | v0.9.1 current，v1.0 RC；配套工具 A2UI Composer | agent 用声明式 JSON 描述界面，宿主用自己的组件渲染 |
+| **发出 UI** | A2UI（Google + AG-UI 生态） | **v1.0 current**（v0.8 已 `deprecated`，v0.9 / v0.9.1 为 previous）；配套工具 A2UI Composer | agent 用声明式 JSON 描述界面，宿主用自己的组件渲染 |
 
 **关键观察**：Chrome 把「驱动 UI」「暴露工具」「运行模型」三个面都做成了 agent 可用的协议。
 **唯独「发出 UI」这一面，Google 给的是规范 + 编辑器，没有给出可验收的运行时**——这正好是你已经做了一半的事。
@@ -159,7 +159,7 @@ Composer 已经占住「怎么写对」，v0.2dev / CopilotKit 也在同一个�
 | 优先级 | 做什么 | 为什么 |
 | --- | --- | --- |
 | P0 | 方言转换器（v0.8 ↔ 新方言） | 一周成本换互通能力，先能读 Composer 的产物 |
-| P1 | 迁 v0.9.1：`createSurface` / `surfaceProperties` / 客户端函数 | 版本债越拖越贵，有转换层后可分步 |
+| P1 | 迁 v1.0：`createSurface` / `updateComponents` / 双向函数调用 | 版本债越拖越贵，有转换层后可分步 |
 | P2 | catalog 协商（声明本端支持什么） | 换设计系统不动 prompt 的前提 |
 | P2 | 多 surface（弹窗 / 侧栏独立 surface） | 复杂产品形态的最低要求 |
 
